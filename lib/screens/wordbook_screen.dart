@@ -1,40 +1,42 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/words_provider.dart';
 
-class WordbookScreen extends StatelessWidget {
-  const WordbookScreen({super.key});
+class WordbookScreen extends ConsumerWidget {
+  final String wordbookId;
+  final String title;
+
+  const WordbookScreen({super.key, required this.wordbookId, required this.title});
 
   @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('単語帳'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: '未学習'),
-              Tab(text: '学習済み'),
-            ],
-          ),
-        ),
-        body: const TabBarView(
-          children: [
-            _WordList(isLearned: false),
-            _WordList(isLearned: true),
-          ],
-        ),
-      ),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final words = ref
+        .watch(wordsProvider)
+        .where((w) => w.wordbookId == wordbookId && !w.isLearned)
+        .toList();
+
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: words.isEmpty
+          ? const Center(child: Text('単語がまだありません'))
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: words.length,
+              separatorBuilder: (_, __) => const Divider(),
+              itemBuilder: (context, index) {
+                final word = words[index];
+                return ListTile(
+                  title: Text(word.headword, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('${word.meaningJa}　(${word.partOfSpeech})'),
+                  trailing: OutlinedButton(
+                    onPressed: () {
+                      ref.read(wordsProvider.notifier).toggleLearned(word.id);
+                    },
+                    child: const Text('覚えた'),
+                  ),
+                );
+              },
+            ),
     );
-  }
-}
-
-class _WordList extends StatelessWidget {
-  final bool isLearned;
-  const _WordList({required this.isLearned});
-
-  @override
-  Widget build(BuildContext context) {
-    // TODO: DBから単語リストを取得
-    return const Center(child: Text('単語がまだありません'));
   }
 }
