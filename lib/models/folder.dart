@@ -3,9 +3,17 @@ class AppFolder {
   final String name;
   final String? parentId;
 
-  const AppFolder({
-    required this.id,
-    required this.name,
-    this.parentId,
-  });
+  const AppFolder({required this.id, required this.name, this.parentId});
+
+  factory AppFolder.fromJson(Map<String, dynamic> json) {
+    return AppFolder(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      parentId: json['parent_id'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {'id': id, 'name': name, 'parent_id': parentId};
+  }
 }

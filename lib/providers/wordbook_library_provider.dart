@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/folder.dart';
 import '../models/wordbook.dart';
+import 'material_library_provider.dart';
 
 class WordbookLibraryState {
   final List<AppFolder> folders;
@@ -13,37 +14,36 @@ class WordbookLibraryState {
 }
 
 class WordbookLibraryNotifier extends Notifier<WordbookLibraryState> {
-  int _folderSeq = 0;
-  int _bookSeq = 0;
-
   @override
   WordbookLibraryState build() {
-    // ダミーデータ：デフォルトの単語帳を1つ用意
-    return const WordbookLibraryState(
-      folders: [],
+    final materialLibrary = ref.watch(materialLibraryProvider);
+    return WordbookLibraryState(
+      folders: materialLibrary.folders,
       wordbooks: [
-        Wordbook(id: 'default', name: '未学習単語帳'),
+        ...materialLibrary.folders.map(
+          (folder) => Wordbook(
+            id: 'folder:${folder.id}',
+            name: folder.name,
+            folderId: folder.parentId,
+            sourceFolderId: folder.id,
+          ),
+        ),
+        ...materialLibrary.materials.map(
+          (material) => Wordbook(
+            id: 'material:${material.id}',
+            name: material.title,
+            folderId: material.folderId,
+            isLearned: false,
+            sourceMaterialId: material.id,
+          ),
+        ),
       ],
     );
   }
 
-  void createFolder(String name, {String? parentId}) {
-    _folderSeq++;
-    final folder = AppFolder(id: 'wf_$_folderSeq', name: name, parentId: parentId);
-    state = WordbookLibraryState(
-      folders: [...state.folders, folder],
-      wordbooks: state.wordbooks,
-    );
-  }
+  void createFolder(String name, {String? parentId}) {}
 
-  void createWordbook(String name, {String? folderId}) {
-    _bookSeq++;
-    final book = Wordbook(id: 'wb_$_bookSeq', name: name, folderId: folderId);
-    state = WordbookLibraryState(
-      folders: state.folders,
-      wordbooks: [...state.wordbooks, book],
-    );
-  }
+  void createWordbook(String name, {String? folderId}) {}
 }
 
 final wordbookLibraryProvider =
