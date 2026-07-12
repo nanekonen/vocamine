@@ -467,94 +467,112 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
                   '${_index + 1} / ${_words.length}',
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 28),
-                Text(
-                  _current.headword,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.displaySmall,
-                ),
-                if (_current.ipa?.trim().isNotEmpty == true)
-                  Text(_current.ipa!, textAlign: TextAlign.center),
-                IconButton(
-                  onPressed: _speak,
-                  icon: const Icon(Icons.volume_up),
-                ),
-                const SizedBox(height: 24),
-                if (isFlash) ...[
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 200),
-                    child: _revealed
-                        ? Text(
-                            _current.meaningJa,
-                            key: const ValueKey('answer'),
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.headlineSmall,
-                          )
-                        : const Text(
-                            '画面をクリックして答えを表示',
-                            textAlign: TextAlign.center,
-                          ),
-                  ),
-                ] else if (isQuiz) ...[
-                  if (_loadingDistractors)
-                    const Center(child: CircularProgressIndicator())
-                  else
-                    for (final choice in choices)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: OutlinedButton(
-                          style: _selected == null
-                              ? null
-                              : OutlinedButton.styleFrom(
-                                  backgroundColor:
-                                      choice.studyKey == _current.studyKey
-                                      ? const Color(
-                                          0xFF68ABFF,
-                                        ).withValues(alpha: .16)
-                                      : ((_selected == choice.studyKey.hashCode)
-                                            ? const Color(
-                                                0xFFBA1A1A,
-                                              ).withValues(alpha: .12)
-                                            : null),
-                                ),
-                          onPressed: () => _answer(choice),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text(choice.meaningJa),
-                          ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const SizedBox(height: 20),
+                        Text(
+                          _current.headword,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.displaySmall,
                         ),
-                      ),
-                ] else if (isTest) ...[
-                  TextField(
-                    controller: _answerController,
-                    enabled: !_revealed,
-                    textInputAction: TextInputAction.done,
-                    onSubmitted: (_) => _decideTypedAnswer(),
-                    decoration: const InputDecoration(
-                      labelText: '日本語の意味を入力',
-                      hintText: '完全一致でなくても後から正解にできます',
+                        if (_current.ipa?.trim().isNotEmpty == true)
+                          Text(_current.ipa!, textAlign: TextAlign.center),
+                        IconButton(
+                          onPressed: _speak,
+                          icon: const Icon(Icons.volume_up),
+                        ),
+                        const SizedBox(height: 24),
+                        if (isFlash) ...[
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 200),
+                            child: _revealed
+                                ? Text(
+                                    _current.meaningJa,
+                                    key: const ValueKey('answer'),
+                                    textAlign: TextAlign.center,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.headlineSmall,
+                                  )
+                                : const Text(
+                                    '画面をクリックして答えを表示',
+                                    textAlign: TextAlign.center,
+                                  ),
+                          ),
+                        ] else if (isQuiz) ...[
+                          if (_loadingDistractors)
+                            const Center(child: CircularProgressIndicator())
+                          else
+                            for (final choice in choices)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 10),
+                                child: OutlinedButton(
+                                  style: _selected == null
+                                      ? null
+                                      : OutlinedButton.styleFrom(
+                                          backgroundColor:
+                                              choice.studyKey ==
+                                                  _current.studyKey
+                                              ? const Color(
+                                                  0xFF68ABFF,
+                                                ).withValues(alpha: .16)
+                                              : ((_selected ==
+                                                        choice
+                                                            .studyKey
+                                                            .hashCode)
+                                                    ? const Color(
+                                                        0xFFBA1A1A,
+                                                      ).withValues(alpha: .12)
+                                                    : null),
+                                        ),
+                                  onPressed: () => _answer(choice),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Text(choice.meaningJa),
+                                  ),
+                                ),
+                              ),
+                        ] else if (isTest) ...[
+                          TextField(
+                            controller: _answerController,
+                            enabled: !_revealed,
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: (_) => _decideTypedAnswer(),
+                            decoration: const InputDecoration(
+                              labelText: '日本語の意味を入力',
+                              hintText: '完全一致でなくても後から正解にできます',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton(
+                            onPressed: _revealed ? null : _decideTypedAnswer,
+                            child: const Text('決定して答え合わせ'),
+                          ),
+                        ],
+                        if ((_selected != null && isQuiz) ||
+                            (_revealed && isTest)) ...[
+                          const SizedBox(height: 20),
+                          _AnswerDetail(word: _current),
+                          if (isTest && !_correct.contains(_current.studyKey))
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton.icon(
+                                onPressed: _markCurrentCorrect,
+                                icon: const Icon(Icons.check),
+                                label: const Text('正解にする'),
+                              ),
+                            ),
+                        ],
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: _revealed ? null : _decideTypedAnswer,
-                    child: const Text('決定して答え合わせ'),
-                  ),
-                ],
-                if ((_selected != null && isQuiz) || (_revealed && isTest)) ...[
-                  const SizedBox(height: 20),
-                  _AnswerDetail(word: _current),
-                  if (isTest && !_correct.contains(_current.studyKey))
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: _markCurrentCorrect,
-                        icon: const Icon(Icons.check),
-                        label: const Text('正解にする'),
-                      ),
-                    ),
-                ],
-                const Spacer(),
+                ),
+                const SizedBox(height: 12),
                 if (isFlash)
                   Row(
                     children: [
@@ -599,37 +617,47 @@ class _AnswerDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '答え: ${word.meaningJa}',
-              style: Theme.of(context).textTheme.titleMedium,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('答え', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        Card(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  word.meaningJa,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                if (word.definitionEn?.trim().isNotEmpty == true)
+                  Text(word.definitionEn!),
+                const SizedBox(height: 6),
+                Text(
+                  '${partOfSpeechLabel(word.partOfSpeech)} ・ ${dictionarySourceLabel(word.dictionarySource)}',
+                ),
+                if (word.ipa?.trim().isNotEmpty == true)
+                  Text('IPA: ${word.ipa}'),
+                if (word.tier != null) Text('語彙レベル: Tier ${word.tier}'),
+                if (word.sourceLabels.isNotEmpty)
+                  Text('登録元教材: ${word.sourceLabels.join('、')}'),
+                if (word.examples.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text('例: ${word.examples.first.sentence}'),
+                  if (word.examples.first.translatedSentence
+                          ?.trim()
+                          .isNotEmpty ==
+                      true)
+                    Text(word.examples.first.translatedSentence!),
+                ],
+              ],
             ),
-            if (word.definitionEn?.trim().isNotEmpty == true)
-              Text(word.definitionEn!),
-            const SizedBox(height: 6),
-            Text(
-              '${partOfSpeechLabel(word.partOfSpeech)} ・ ${dictionarySourceLabel(word.dictionarySource)}',
-            ),
-            if (word.ipa?.trim().isNotEmpty == true) Text('IPA: ${word.ipa}'),
-            if (word.tier != null) Text('語彙レベル: Tier ${word.tier}'),
-            if (word.sourceLabels.isNotEmpty)
-              Text('登録元教材: ${word.sourceLabels.join('、')}'),
-            if (word.examples.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text('例: ${word.examples.first.sentence}'),
-              if (word.examples.first.translatedSentence?.trim().isNotEmpty ==
-                  true)
-                Text(word.examples.first.translatedSentence!),
-            ],
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }
