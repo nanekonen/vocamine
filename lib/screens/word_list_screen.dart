@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/word.dart';
 import '../utils/part_of_speech_label.dart';
+import '../widgets/academic_tag.dart';
 
 class WordListScreen extends StatefulWidget {
   final String title;
@@ -79,9 +80,8 @@ class _WordListScreenState extends State<WordListScreen> {
                       ),
                       const SizedBox(height: 8),
                       if (word.partOfSpeech.isNotEmpty)
-                        Chip(
-                          visualDensity: VisualDensity.compact,
-                          label: Text(partOfSpeechLabel(word.partOfSpeech)),
+                        AcademicTag(
+                          label: partOfSpeechLabel(word.partOfSpeech),
                         ),
                     ],
                   ),

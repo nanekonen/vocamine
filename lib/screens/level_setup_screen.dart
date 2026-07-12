@@ -41,15 +41,39 @@ class _LevelSetupScreenState extends ConsumerState<LevelSetupScreen> {
   final _api = VocamineApiClient();
   bool _isSaving = false;
 
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(_loadCurrentLevel);
+  }
+
+  Future<void> _loadCurrentLevel() async {
+    final session = ref.read(appSessionProvider);
+    var level = session.level;
+    if (level == null && session.isLoggedIn && session.setupCompleted) {
+      try {
+        level = await _api.fetchUserLevel(userId: session.userId);
+      } catch (_) {
+        return;
+      }
+    }
+    if (level != null) {
+      ref.read(selectedLevelProvider.notifier).select(level);
+    }
+  }
+
   Future<void> _saveLevel(String level) async {
     setState(() => _isSaving = true);
     try {
       final count = await _api.setupLevel(
         userId: ref.read(appSessionProvider).userId,
         level: level,
+        username: ref.read(appSessionProvider).username ?? 'User',
       );
       if (!mounted) return;
-      await ref.read(appSessionProvider.notifier).markSetupCompleted();
+      await ref
+          .read(appSessionProvider.notifier)
+          .markSetupCompleted(level: level);
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -85,7 +109,7 @@ class _LevelSetupScreenState extends ConsumerState<LevelSetupScreen> {
             return Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Card(
-                color: isSelected ? const Color(0xFFE0ECE8) : Colors.white,
+                color: isSelected ? const Color(0xFFD4E3FF) : Colors.white,
                 child: ListTile(
                   leading: Icon(
                     isSelected

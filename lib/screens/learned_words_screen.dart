@@ -34,8 +34,7 @@ class LearnedWordsScreen extends ConsumerStatefulWidget {
   const LearnedWordsScreen({super.key});
 
   @override
-  ConsumerState<LearnedWordsScreen> createState() =>
-      _LearnedWordsScreenState();
+  ConsumerState<LearnedWordsScreen> createState() => _LearnedWordsScreenState();
 }
 
 class _LearnedWordsScreenState extends ConsumerState<LearnedWordsScreen> {
@@ -72,7 +71,8 @@ class _LearnedWordsScreenState extends ConsumerState<LearnedWordsScreen> {
   ) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => WordListScreen(title: title, loadWords: loadWords),
+        builder: (context) =>
+            WordListScreen(title: title, loadWords: loadWords),
       ),
     );
   }
@@ -95,7 +95,7 @@ class _LearnedWordsScreenState extends ConsumerState<LearnedWordsScreen> {
                   icon: Icons.school_outlined,
                   title: _cefrLabelForTier(tier),
                   subtitle: null,
-                  accentColor: const Color(0xFFC4934E),
+                  accentColor: const Color(0xFFC9A900),
                   onTap: () => _openWordList(
                     context,
                     _cefrLabelForTier(tier),
@@ -149,7 +149,7 @@ class _LearnedTile extends StatelessWidget {
       width: tileWidth,
       child: Card(
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.zero,
           onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.all(18),
@@ -160,7 +160,7 @@ class _LearnedTile extends StatelessWidget {
                   height: 42,
                   decoration: BoxDecoration(
                     color: accentColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.zero,
                     border: Border.all(
                       color: accentColor.withValues(alpha: 0.26),
                     ),
@@ -182,9 +182,12 @@ class _LearnedTile extends StatelessWidget {
                         const SizedBox(height: 8),
                         Text(
                           subtitle!,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
                         ),
                       ],
                     ],

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../models/lexical_analysis.dart';
 import '../models/material_item.dart';
 import '../models/word_lookup.dart';
@@ -13,6 +14,8 @@ import '../providers/wordbook_library_provider.dart';
 import '../services/app_session.dart';
 import '../services/vocamine_api_client.dart';
 import '../utils/part_of_speech_label.dart';
+import '../widgets/square_progress_indicator.dart';
+import '../widgets/academic_tag.dart';
 
 enum _MaterialDisplayMode { original, text }
 
@@ -21,6 +24,17 @@ enum _SidePanelMode { selection, unknown, known, all }
 final Map<String, String?> _materialDefaultWordbookCache = {};
 final Map<String, Set<int>> _registeredMeaningIdsByMaterial = {};
 final Map<String, Future<String?>> _materialDefaultWordbookLoads = {};
+
+String _wordbookName(BuildContext context, String wordbookId) {
+  final library = ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(wordbookLibraryProvider);
+  for (final wordbook in library.wordbooks) {
+    if (wordbook.id == wordbookId) return wordbook.name;
+  }
+  return '選択した単語帳';
+}
 
 Future<String?> _preloadMaterialDefaultWordbook(
   MaterialItem material,
@@ -173,12 +187,16 @@ Future<String?> _selectWordbookForMaterial(
         .createWordbook(name);
     wordbookId = book.id;
   }
-  await api.setMaterialDefaultWordbook(
-    userId: userId,
-    materialId: material.id,
-    wordbookId: wordbookId,
-  );
-  _materialDefaultWordbookCache[material.id] = wordbookId;
+  // 「別の単語帳に登録」は今回の登録先だけを変更し、教材の既定先は
+  // 変更しない。通常の初回選択時だけ既定の単語帳として保存する。
+  if (!forceSelection) {
+    await api.setMaterialDefaultWordbook(
+      userId: userId,
+      materialId: material.id,
+      wordbookId: wordbookId,
+    );
+    _materialDefaultWordbookCache[material.id] = wordbookId;
+  }
   return wordbookId;
 }
 
@@ -239,6 +257,19 @@ class _WordLookupCache {
   Future<void> loadStoredMeanings(Iterable<LexicalItemResult> items) {
     return _loading ??= _loadStoredMeanings(items);
   }
+
+  Future<void> reloadStoredMeanings(Iterable<LexicalItemResult> items) {
+    _results.clear();
+    _loading = null;
+    return loadStoredMeanings(items);
+  }
+
+  Set<int> get missingJapaneseMeaningIds => _results.values
+      .expand((result) => result.meanings)
+      .where((meaning) => meaning.definitionJa?.trim().isNotEmpty != true)
+      .map((meaning) => meaning.id)
+      .where((id) => id > 0)
+      .toSet();
 
   Future<void> _loadStoredMeanings(Iterable<LexicalItemResult> items) async {
     final itemList = items.toList();
@@ -361,6 +392,30 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
   final Set<String> _autoAnalysisRequested = {};
   bool _registeredMeaningsRequested = false;
   bool _storedMeaningsRequested = false;
+  bool _regeneratingJapanese = false;
+  List<LexicalItemResult> _materialItems = const [];
+
+  Future<void> _regenerateMissingJapanese() async {
+    final ids = _lookupCache.missingJapaneseMeaningIds;
+    if (ids.isEmpty || _regeneratingJapanese) return;
+    setState(() => _regeneratingJapanese = true);
+    try {
+      final updated = await VocamineApiClient().regenerateMissingJapanese(ids);
+      await _lookupCache.reloadStoredMeanings(_materialItems);
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$updated件の日本語訳を再生成しました')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('日本語訳の再生成に失敗しました: $error')));
+    } finally {
+      if (mounted) setState(() => _regeneratingJapanese = false);
+    }
+  }
 
   @override
   void initState() {
@@ -423,6 +478,7 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
     }
     analysis?.whenOrNull(
       data: (result) {
+        _materialItems = result.items;
         if (_storedMeaningsRequested) return;
         _storedMeaningsRequested = true;
         _lookupCache
@@ -440,8 +496,76 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: 52,
         title: Text(widget.title),
         actions: [
+          IconButton(
+            tooltip: 'オリジナル',
+            onPressed: hasSource
+                ? () => setState(
+                    () => _displayMode = _MaterialDisplayMode.original,
+                  )
+                : null,
+            icon: Icon(
+              Icons.description_outlined,
+              color: effectiveMode == _MaterialDisplayMode.original
+                  ? Theme.of(context).colorScheme.secondary
+                  : null,
+            ),
+          ),
+          IconButton(
+            tooltip: 'テキスト',
+            onPressed: () =>
+                setState(() => _displayMode = _MaterialDisplayMode.text),
+            icon: Icon(
+              Icons.text_fields,
+              color: effectiveMode == _MaterialDisplayMode.text
+                  ? Theme.of(context).colorScheme.secondary
+                  : null,
+            ),
+          ),
+          const VerticalDivider(indent: 10, endIndent: 10),
+          _ToolbarIconButton(
+            tooltip: '縮小',
+            onPressed: _zoom <= 0.75
+                ? null
+                : () => setState(() => _zoom -= 0.1),
+            icon: Icons.zoom_out,
+          ),
+          Tooltip(
+            message: '表示倍率を100%に戻す',
+            child: InkWell(
+              onTap: _zoom == 1.0 ? null : () => setState(() => _zoom = 1.0),
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '${(_zoom * 100).round()}%',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          _ToolbarIconButton(
+            tooltip: '拡大',
+            onPressed: _zoom >= 2.0 ? null : () => setState(() => _zoom += 0.1),
+            icon: Icons.zoom_in,
+          ),
+          if (_lookupCache.missingJapaneseMeaningIds.isNotEmpty)
+            IconButton(
+              tooltip:
+                  '日本語訳がない${_lookupCache.missingJapaneseMeaningIds.length}件を再生成',
+              onPressed: _regeneratingJapanese
+                  ? null
+                  : _regenerateMissingJapanese,
+              icon: _regeneratingJapanese
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.auto_fix_high),
+            ),
           IconButton(
             tooltip: '再解析',
             onPressed: () => ref
@@ -452,112 +576,19 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
         ],
       ),
       body: ColoredBox(
-        color: const Color(0xFFFCFAF6),
-        child: Column(
-          children: [
-            _AnalysisHeader(
-              analysis: analysis,
-              onShowItems: (mode) => setState(() {
-                _sidePanelMode = _sidePanelMode == mode ? null : mode;
-              }),
-            ),
-            const Divider(height: 1),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(bottom: BorderSide(color: Color(0xFFE3DED3))),
-              ),
-              child: Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  SegmentedButton<_MaterialDisplayMode>(
-                    style: ButtonStyle(
-                      shape: WidgetStatePropertyAll(
-                        RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                    segments: const [
-                      ButtonSegment(
-                        value: _MaterialDisplayMode.original,
-                        icon: Icon(Icons.description_outlined),
-                        label: Text('原本'),
-                      ),
-                      ButtonSegment(
-                        value: _MaterialDisplayMode.text,
-                        icon: Icon(Icons.text_fields),
-                        label: Text('テキスト'),
-                      ),
-                    ],
-                    selected: {effectiveMode},
-                    onSelectionChanged: hasSource
-                        ? (selection) {
-                            setState(() => _displayMode = selection.single);
-                          }
-                        : null,
-                  ),
-                  _ToolbarIconButton(
-                    tooltip: '縮小',
-                    onPressed: _zoom <= 0.75
-                        ? null
-                        : () => setState(() => _zoom -= 0.1),
-                    icon: Icons.zoom_out,
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF2EFE8),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: const Color(0xFFE3DED3)),
-                    ),
-                    child: Text(
-                      '${(_zoom * 100).round()}%',
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                  ),
-                  _ToolbarIconButton(
-                    tooltip: '拡大',
-                    onPressed: _zoom >= 2.0
-                        ? null
-                        : () => setState(() => _zoom += 0.1),
-                    icon: Icons.zoom_in,
-                  ),
-                  _ToolbarIconButton(
-                    tooltip: '倍率を戻す',
-                    onPressed: _zoom == 1.0
-                        ? null
-                        : () => setState(() => _zoom = 1.0),
-                    icon: Icons.center_focus_strong,
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  _MaterialContentView(
-                    material: material,
-                    mode: effectiveMode,
-                    analysis: analysis,
-                    lookupCache: _lookupCache,
-                    zoom: _zoom,
-                    sidePanelMode: _sidePanelMode,
-                    onSidePanelModeChanged: (mode) =>
-                        setState(() => _sidePanelMode = mode),
-                  ),
-                ],
-              ),
-            ),
-          ],
+        color: const Color(0xFFF7F9FB),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: _MaterialContentView(
+            material: material,
+            mode: effectiveMode,
+            analysis: analysis,
+            lookupCache: _lookupCache,
+            zoom: _zoom,
+            sidePanelMode: _sidePanelMode,
+            onSidePanelModeChanged: (mode) =>
+                setState(() => _sidePanelMode = mode),
+          ),
         ),
       ),
     );
@@ -577,14 +608,15 @@ class _ToolbarIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton.outlined(
+    return IconButton(
       tooltip: tooltip,
       onPressed: onPressed,
-      icon: Icon(icon, size: 20),
+      icon: Icon(icon, size: 19),
       style: IconButton.styleFrom(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        side: const BorderSide(color: Color(0xFFE3DED3)),
-        backgroundColor: Colors.white,
+        minimumSize: const Size(36, 36),
+        maximumSize: const Size(36, 36),
+        padding: EdgeInsets.zero,
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
         foregroundColor: Theme.of(context).colorScheme.primary,
       ),
     );
@@ -617,6 +649,11 @@ class _MaterialContentView extends ConsumerStatefulWidget {
 
 class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   final GlobalKey _textKey = GlobalKey();
+  final ScrollController _textScrollController = ScrollController();
+  final ScrollController _sourceScrollController = ScrollController();
+  final List<GlobalKey> _sourcePageKeys = [];
+  final Map<String, GlobalKey> _sourceRangeKeys = {};
+  final Map<String, int> _focusedOccurrenceIndexes = {};
   OverlayEntry? _popoverEntry;
   final Object _popoverTapRegionGroup = Object();
   String? _hoveredRangeKey;
@@ -649,6 +686,8 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   @override
   void dispose() {
     _popoverEntry?.remove();
+    _textScrollController.dispose();
+    _sourceScrollController.dispose();
     super.dispose();
   }
 
@@ -657,13 +696,23 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     _popoverEntry = null;
   }
 
-  void _showMeaningPopover(LexicalItemResult item, Offset globalPosition) {
+  void _showMeaningPopover(
+    LexicalItemResult item,
+    Offset globalPosition, {
+    bool focusOccurrence = true,
+  }) {
     _hideMeaningPopover();
+    if (focusOccurrence) {
+      _focusItemOccurrence(item);
+    }
     final hostContext = context;
     final overlay = Overlay.of(context);
     final screenSize = MediaQuery.sizeOf(context);
     const width = 340.0;
-    final left = (globalPosition.dx - 28).clamp(
+    final preferredLeft = globalPosition.dx > screenSize.width * 0.65
+        ? globalPosition.dx - width - 24
+        : globalPosition.dx - 28;
+    final left = preferredLeft.clamp(
       12.0,
       (screenSize.width - width - 12).clamp(12.0, screenSize.width),
     );
@@ -714,6 +763,118 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     overlay.insert(_popoverEntry!);
   }
 
+  void _focusItemOccurrence(LexicalItemResult item) {
+    final ranges = item.kind == 'phrase'
+        ? <_TextRange>[]
+        : _learningTextState
+              .rangesForItem(item)
+              .map((range) => _TextRange(range.start, range.end))
+              .toList();
+    if (ranges.isEmpty) {
+      ranges.addAll(
+        item.occurrences
+            .where(
+              (occurrence) =>
+                  occurrence.start >= 0 &&
+                  occurrence.end > occurrence.start &&
+                  occurrence.end <= widget.material.ocrText.length,
+            )
+            .map((occurrence) => _TextRange(occurrence.start, occurrence.end)),
+      );
+    }
+    if (ranges.isEmpty) return;
+    ranges.sort((left, right) => left.start.compareTo(right.start));
+    final itemKey = '${item.text}:${item.partOfSpeech}:${item.kind}';
+    final nextIndex =
+        ((_focusedOccurrenceIndexes[itemKey] ?? -1) + 1) % ranges.length;
+    _focusedOccurrenceIndexes[itemKey] = nextIndex;
+    final focusedRange = ranges[nextIndex];
+    final rangeKey = _markedRangeKey(focusedRange.start, focusedRange.end);
+    setState(() {
+      _hoveredRangeKey = rangeKey;
+      // hoverだけでなく選択範囲としても保持し、原文・テキストの双方で
+      // 確実にマーカーを描画する。
+      _selectionStart = focusedRange.start;
+      _selectionEnd = focusedRange.end;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (widget.mode == _MaterialDisplayMode.original) {
+        final rangeContext = _sourceRangeKeys[rangeKey]?.currentContext;
+        if (rangeContext != null) {
+          Scrollable.ensureVisible(
+            rangeContext,
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeOut,
+            alignment: 0.4,
+          );
+          return;
+        }
+        final sourceBoxes = _resolveSourceBoxes(
+          widget.material.sourceWordBoxes,
+          widget.material.ocrText,
+        );
+        final matching = sourceBoxes.where(
+          (resolved) =>
+              resolved.textRange.end > focusedRange.start &&
+              resolved.textRange.start < focusedRange.end,
+        );
+        final pageIndex = matching.isEmpty
+            ? null
+            : matching.first.box.pageIndex;
+        if (pageIndex != null && pageIndex < _sourcePageKeys.length) {
+          final pageContext = _sourcePageKeys[pageIndex].currentContext;
+          if (pageContext != null) {
+            Scrollable.ensureVisible(
+              pageContext,
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeOut,
+              alignment: 0.35,
+            );
+          }
+        }
+      } else {
+        final textContext = _textKey.currentContext;
+        if (textContext != null) {
+          final textBox = textContext.findRenderObject() as RenderBox?;
+          final scrollable = Scrollable.maybeOf(textContext);
+          final viewportBox =
+              scrollable?.context.findRenderObject() as RenderBox?;
+          if (textBox != null && scrollable != null && viewportBox != null) {
+            final painter = TextPainter(
+              text: TextSpan(
+                text: widget.material.ocrText,
+                style: _textStyle(context),
+              ),
+              textDirection: Directionality.of(context),
+              textScaler: MediaQuery.textScalerOf(context),
+            )..layout(maxWidth: textBox.size.width);
+            final caret = painter.getOffsetForCaret(
+              TextPosition(offset: focusedRange.start),
+              Rect.zero,
+            );
+            final targetGlobalY = textBox.localToGlobal(caret).dy;
+            final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+            final position = _textScrollController.position;
+            final target =
+                (position.pixels +
+                        targetGlobalY -
+                        viewportTop -
+                        viewportBox.size.height * 0.2)
+                    .clamp(position.minScrollExtent, position.maxScrollExtent)
+                    .toDouble();
+            position.animateTo(
+              target,
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeOut,
+            );
+          }
+        }
+      }
+    });
+  }
+
   void _setHoveredRange(String? key) {
     if (_hoveredRangeKey == key) return;
     setState(() => _hoveredRangeKey = key);
@@ -739,9 +900,10 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
 
   TextStyle? _textStyle(BuildContext context) {
     final base = Theme.of(context).textTheme.bodyLarge;
-    return base?.copyWith(
+    return GoogleFonts.sourceSerif4(textStyle: base).copyWith(
       height: 1.8,
-      fontSize: (base.fontSize ?? 16) * widget.zoom,
+      color: const Color(0xFF2D3133),
+      fontSize: (base?.fontSize ?? 16) * widget.zoom,
     );
   }
 
@@ -832,7 +994,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       _selectionStart = null;
       _selectionEnd = null;
     });
-    _showMeaningPopover(item, event.position);
+    _showMeaningPopover(item, event.position, focusOccurrence: false);
   }
 
   int? _textOffsetAtSourcePosition(
@@ -913,14 +1075,24 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     _LearningTextSegment segment,
   ) {
     final range = segment.range;
-    final isWord = range?.kind == _MarkedRangeKind.word;
-    final rangeKey = isWord ? _markedRangeKey(range!.start, range!.end) : null;
+    final isLexicalRange =
+        range?.kind == _MarkedRangeKind.word ||
+        range?.kind == _MarkedRangeKind.phrase;
+    final rangeKey = isLexicalRange
+        ? _markedRangeKey(range!.start, range.end)
+        : null;
     final color = segment.visual.backgroundColor;
 
+    final markerKey = rangeKey != null && segment.start == range?.start
+        ? _sourceRangeKeys.putIfAbsent(rangeKey, () => GlobalKey())
+        : null;
     return Positioned.fromRect(
       rect: _sourceSegmentRect(box, pageSize, boxRange, segment),
       child: MouseRegion(
-        cursor: isWord ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        key: markerKey,
+        cursor: isLexicalRange
+            ? SystemMouseCursors.click
+            : SystemMouseCursors.basic,
         onEnter: rangeKey == null ? null : (_) => _setHoveredRange(rangeKey),
         onExit: rangeKey == null
             ? null
@@ -931,20 +1103,26 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
               },
         child: GestureDetector(
           behavior: HitTestBehavior.translucent,
-          onDoubleTapDown: !isWord
+          onDoubleTapDown: !isLexicalRange
               ? null
-              : (details) =>
-                    _showMeaningPopover(range!.item, details.globalPosition),
-          onLongPressStart: !isWord
+              : (details) => _showMeaningPopover(
+                  range!.item,
+                  details.globalPosition,
+                  focusOccurrence: false,
+                ),
+          onLongPressStart: !isLexicalRange
               ? null
-              : (details) =>
-                    _showMeaningPopover(range!.item, details.globalPosition),
+              : (details) => _showMeaningPopover(
+                  range!.item,
+                  details.globalPosition,
+                  focusOccurrence: false,
+                ),
           child: color == null
               ? const SizedBox.expand()
               : DecoratedBox(
                   decoration: BoxDecoration(
                     color: color,
-                    borderRadius: BorderRadius.circular(2),
+                    borderRadius: BorderRadius.zero,
                   ),
                 ),
         ),
@@ -1080,34 +1258,48 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       widget.material.sourceWordBoxes,
       state.text,
     );
+    while (_sourcePageKeys.length < pages.length) {
+      _sourcePageKeys.add(GlobalKey());
+    }
 
     return DecoratedBox(
       decoration: BoxDecoration(
         border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.zero,
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: ListView.separated(
+        borderRadius: BorderRadius.zero,
+        child: SingleChildScrollView(
+          controller: _sourceScrollController,
           padding: const EdgeInsets.all(12),
-          itemCount: pages.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            return DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: Colors.grey.shade300),
-                boxShadow: const [
-                  BoxShadow(
-                    blurRadius: 8,
-                    color: Color(0x1F000000),
-                    offset: Offset(0, 2),
+          primary: false,
+          child: Column(
+            children: [
+              for (var index = 0; index < pages.length; index++) ...[
+                if (index > 0) const SizedBox(height: 12),
+                DecoratedBox(
+                  key: _sourcePageKeys[index],
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    border: Border.all(color: Colors.grey.shade300),
+                    boxShadow: const [
+                      BoxShadow(
+                        blurRadius: 8,
+                        color: Color(0x1F000000),
+                        offset: Offset(0, 2),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              child: _buildSourcePage(pages[index], index, state, sourceBoxes),
-            );
-          },
+                  child: _buildSourcePage(
+                    pages[index],
+                    index,
+                    state,
+                    sourceBoxes,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -1119,8 +1311,8 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: const Color(0xFFE3DED3)),
-        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFDDE3EA)),
+        borderRadius: BorderRadius.zero,
       ),
       child: Listener(
         behavior: HitTestBehavior.translucent,
@@ -1178,63 +1370,74 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
             .read(materialLibraryProvider.notifier)
             .analyzeMaterial(widget.material.id, force: true);
       },
-      onShowDetails: _showMeaningPopover,
+      onShowDetails: (item, position) =>
+          _showMeaningPopover(item, position, focusOccurrence: true),
       lookupCache: widget.lookupCache,
+    );
+    final overview = _AnalysisHeader(
+      analysis: widget.analysis,
+      onShowItems: (mode) => widget.onSidePanelModeChanged(
+        widget.sidePanelMode == mode ? null : mode,
+      ),
     );
     final showSource =
         widget.mode == _MaterialDisplayMode.original &&
         canDisplayOriginalSource(widget.material);
-    final showSidePanel = widget.sidePanelMode != null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final contentWidth = constraints.maxWidth < 760
             ? constraints.maxWidth
-            : constraints.maxWidth - 340;
-        final content = showSource
+            : constraints.maxWidth - 356;
+        final rawContent = showSource
             ? _buildSourceContent(state)
             : _buildTextContent(state, contentWidth);
+        final content = showSource
+            ? Scrollbar(
+                controller: _sourceScrollController,
+                thumbVisibility: true,
+                child: rawContent,
+              )
+            : Scrollbar(
+                controller: _textScrollController,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: _textScrollController,
+                  primary: false,
+                  child: rawContent,
+                ),
+              );
 
         if (constraints.maxWidth < 760) {
-          if (showSource) {
-            return SizedBox(
-              height: MediaQuery.sizeOf(context).height * 0.68,
-              child: Column(
-                children: [
-                  Expanded(child: content),
-                  if (showSidePanel) ...[
-                    const SizedBox(height: 12),
-                    SizedBox(height: 260, child: sidePanel),
-                  ],
-                ],
-              ),
-            );
-          }
           return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              content,
-              if (showSidePanel) ...[const SizedBox(height: 16), sidePanel],
+              Expanded(child: content),
+              const SizedBox(height: 8),
+              overview,
+              if (widget.sidePanelMode != null)
+                SizedBox(height: 260, child: sidePanel),
             ],
           );
         }
 
         final row = Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(child: content),
-            if (showSidePanel) ...[
-              const SizedBox(width: 20),
-              SizedBox(width: 320, child: sidePanel),
-            ],
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 344,
+              child: Column(
+                children: [
+                  overview,
+                  const SizedBox(height: 8),
+                  Expanded(child: sidePanel),
+                ],
+              ),
+            ),
           ],
         );
-        return showSource
-            ? SizedBox(
-                height: MediaQuery.sizeOf(context).height * 0.68,
-                child: row,
-              )
-            : row;
+        return row;
       },
     );
   }
@@ -1389,6 +1592,23 @@ class _LearningTextState {
       }
     }
     return null;
+  }
+
+  _MarkedRange? firstRangeForItem(LexicalItemResult item) {
+    final matches = rangesForItem(item);
+    return matches.isEmpty ? null : matches.first;
+  }
+
+  List<_MarkedRange> rangesForItem(LexicalItemResult item) {
+    return ranges
+        .where(
+          (range) =>
+              range.kind == _MarkedRangeKind.word &&
+              range.item.text == item.text &&
+              range.item.partOfSpeech == item.partOfSpeech,
+        )
+        .toList()
+      ..sort((left, right) => left.start.compareTo(right.start));
   }
 
   _MarkerVisual markerForRange(int start, int end, {bool isHovered = false}) {
@@ -1695,25 +1915,18 @@ class _AnalysisHeader extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  SizedBox.square(
-                    dimension: 54,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        CircularProgressIndicator(
-                          value: result.coverageRate.clamp(0.0, 1.0).toDouble(),
-                          strokeWidth: 5,
-                          backgroundColor: const Color(0xFFF2EFE8),
-                        ),
-                        Center(
-                          child: Text(
-                            '$percent%',
-                            style: theme.textTheme.labelLarge?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ),
-                      ],
+                  SquareProgressIndicator(
+                    value: result.coverageRate,
+                    size: 62,
+                    strokeWidth: 6,
+                    color: theme.colorScheme.secondary,
+                    backgroundColor: const Color(0xFFDDE3EA),
+                    child: Text(
+                      '$percent%',
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: theme.colorScheme.secondary,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -1730,28 +1943,25 @@ class _AnalysisHeader extends StatelessWidget {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            ActionChip(
+                            _AnalysisFilterButton(
                               onPressed: () => onShowItems(_SidePanelMode.all),
-                              avatar: const Icon(
-                                Icons.format_list_bulleted,
-                                size: 16,
-                              ),
+                              icon: Icons.format_list_bulleted,
+                              backgroundColor: const Color(0xFFECEEF0),
+                              foregroundColor: const Color(0xFF1A2B3C),
                               label: Text('全体 ${result.totalWords}'),
                             ),
-                            ActionChip(
+                            _AnalysisFilterButton(
                               onPressed: () =>
                                   onShowItems(_SidePanelMode.known),
-                              avatar: const Icon(
-                                Icons.check_circle_outline,
-                                size: 16,
-                              ),
+                              icon: Icons.check_circle_outline,
+                              backgroundColor: const Color(0xFFD4E3FF),
+                              foregroundColor: const Color(0xFF004883),
                               label: Text('既知 ${result.knownCount}'),
                             ),
-                            ActionChip(
-                              avatar: const Icon(
-                                Icons.radio_button_unchecked,
-                                size: 16,
-                              ),
+                            _AnalysisFilterButton(
+                              icon: Icons.radio_button_unchecked,
+                              backgroundColor: const Color(0xFFFFE16D),
+                              foregroundColor: const Color(0xFF544600),
                               label: Text('未知 ${result.unknownCount}'),
                               onPressed: () =>
                                   onShowItems(_SidePanelMode.unknown),
@@ -1767,6 +1977,51 @@ class _AnalysisHeader extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _AnalysisFilterButton extends StatelessWidget {
+  final IconData icon;
+  final Widget label;
+  final VoidCallback onPressed;
+  final Color backgroundColor;
+  final Color foregroundColor;
+
+  const _AnalysisFilterButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    required this.backgroundColor,
+    required this.foregroundColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: backgroundColor,
+      borderRadius: BorderRadius.zero,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: foregroundColor),
+              const SizedBox(width: 5),
+              DefaultTextStyle(
+                style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                  color: foregroundColor,
+                  fontWeight: FontWeight.w700,
+                ),
+                child: label,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1794,58 +2049,57 @@ class _SelectionMeaningPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final visibleItems = items;
-    final maxHeight = math.min(MediaQuery.sizeOf(context).height * 0.56, 440.0);
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maxHeight),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: const Color(0xFFE3DED3)),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: Theme.of(context).textTheme.titleSmall,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: const Color(0xFFDDE3EA)),
+        borderRadius: BorderRadius.zero,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: const Color(0xFF041627),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: _BatchAddButton(
+                items: visibleItems,
+                userId: userId,
+                material: material,
+                onAdded: onAdded,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: visibleItems.isEmpty
+                  ? const Center(child: Text('該当する単語はありません'))
+                  : ListView.builder(
+                      padding: EdgeInsets.zero,
+                      itemCount: visibleItems.length,
+                      itemBuilder: (context, index) {
+                        final item = visibleItems[index];
+                        return _SelectionMeaningTile(
+                          item: item,
+                          userId: userId,
+                          material: material,
+                          onAdded: onAdded,
+                          onShowDetails: onShowDetails,
+                          lookupCache: lookupCache,
+                        );
+                      },
                     ),
-                  ),
-                  _BatchAddButton(
-                    items: visibleItems,
-                    userId: userId,
-                    material: material,
-                    onAdded: onAdded,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: visibleItems.isEmpty
-                    ? const Center(child: Text('該当する単語はありません'))
-                    : ListView.builder(
-                        padding: EdgeInsets.zero,
-                        itemCount: visibleItems.length,
-                        itemBuilder: (context, index) {
-                          final item = visibleItems[index];
-                          return _SelectionMeaningTile(
-                            item: item,
-                            userId: userId,
-                            material: material,
-                            onAdded: onAdded,
-                            onShowDetails: onShowDetails,
-                            lookupCache: lookupCache,
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -1880,6 +2134,7 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
       forceSelection: forceWordbook,
     );
     if (wordbookId == null) return;
+    final wordbookName = _wordbookName(context, wordbookId);
     setState(() => _isAdding = true);
     try {
       await VocamineApiClient().addItemsToWordbook(
@@ -1895,7 +2150,7 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
       widget.onAdded();
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('一括登録しました')));
+      ).showSnackBar(SnackBar(content: Text('「$wordbookName」に一括登録しました')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -1913,26 +2168,22 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        FilledButton.icon(
+        IconButton.filled(
+          tooltip: '表示中の単語を一括登録',
           onPressed: _isAdding || widget.items.isEmpty ? null : () => _addAll(),
-          style: FilledButton.styleFrom(
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          ),
           icon: _isAdding
               ? const SizedBox.square(
                   dimension: 14,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.playlist_add_check, size: 18),
-          label: const Text('一括登録'),
         ),
-        PopupMenuButton<String>(
+        IconButton.outlined(
           tooltip: '別の単語帳へ一括登録',
-          onSelected: (_) => _addAll(forceWordbook: true),
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'other', child: Text('別の単語帳に登録')),
-          ],
+          onPressed: _isAdding || widget.items.isEmpty
+              ? null
+              : () => _addAll(forceWordbook: true),
+          icon: const Icon(Icons.drive_file_move_outline, size: 18),
         ),
       ],
     );
@@ -1948,16 +2199,16 @@ Color? _markerBackgroundColor({
   required bool touchesSelection,
 }) {
   if (isCompleteSelection && kind == _MarkedRangeKind.phrase) {
-    return Colors.lightGreenAccent.withValues(alpha: 0.36);
+    return const Color(0xFF68ABFF).withValues(alpha: 0.32);
   }
   if (isCompleteSelection && kind == _MarkedRangeKind.word) {
-    return Colors.amber.withValues(alpha: 0.36);
+    return const Color(0xFFFFE16D).withValues(alpha: 0.62);
   }
   if (touchesSelection) {
-    return Colors.lightBlueAccent.withValues(alpha: 0.36);
+    return const Color(0xFFA4C9FF).withValues(alpha: 0.42);
   }
   if (isHovered && kind == _MarkedRangeKind.word) {
-    return Colors.amber.withValues(alpha: 0.30);
+    return const Color(0xFFFFE16D).withValues(alpha: 0.42);
   }
   return null;
 }
@@ -2028,6 +2279,45 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
   final _api = VocamineApiClient();
   final Set<int> _adding = {};
   final Set<int> _added = {};
+  bool _isMarkingKnown = false;
+  late bool _isKnown;
+
+  @override
+  void initState() {
+    super.initState();
+    _isKnown = widget.item.isLearned;
+  }
+
+  Future<void> _markKnown() async {
+    if (_isMarkingKnown || _isKnown) return;
+    setState(() => _isMarkingKnown = true);
+    try {
+      await _api.addItemsToWordbook(
+        userId: widget.userId,
+        items: [widget.item],
+        isLearned: true,
+        sourceType: _sourceTypeForMaterial(widget.material),
+        sourceMaterialId: widget.material.id,
+        sourceFolderId: widget.material.folderId,
+        sourceLabel: widget.material.title,
+      );
+      if (!mounted) return;
+      setState(() => _isKnown = true);
+      widget.onAdded();
+      if (!widget.hostContext.mounted) return;
+      ScaffoldMessenger.of(
+        widget.hostContext,
+      ).showSnackBar(const SnackBar(content: Text('学習済み単語に追加しました')));
+    } catch (error) {
+      if (widget.hostContext.mounted) {
+        ScaffoldMessenger.of(
+          widget.hostContext,
+        ).showSnackBar(SnackBar(content: Text('学習済みへの追加に失敗しました: $error')));
+      }
+    } finally {
+      if (mounted) setState(() => _isMarkingKnown = false);
+    }
+  }
 
   Future<void> _addMeaning(int meaningId, {bool forceWordbook = false}) async {
     final hostContext = widget.hostContext;
@@ -2035,16 +2325,22 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
     final userId = widget.userId;
     final onAdded = widget.onAdded;
     if (!hostContext.mounted) return;
-    if (_adding.contains(meaningId) || _added.contains(meaningId)) return;
+    if (_adding.contains(meaningId) ||
+        (!forceWordbook && _added.contains(meaningId))) {
+      return;
+    }
     setState(() => _adding.add(meaningId));
     String? wordbookId;
     try {
+      // このカード自体が OverlayEntry なので、その上からダイアログを
+      // 開く前に閉じる。これで登録先選択がポップアップの背面に隠れない。
+      if (forceWordbook) widget.onClose();
       wordbookId = await _selectWordbookForMaterial(
         hostContext,
         material,
         forceSelection: forceWordbook,
-        anchorRect: widget.anchorRect,
-        tapRegionGroupId: widget.tapRegionGroupId,
+        anchorRect: forceWordbook ? null : widget.anchorRect,
+        tapRegionGroupId: forceWordbook ? null : widget.tapRegionGroupId,
       );
     } catch (error) {
       if (mounted) setState(() => _adding.remove(meaningId));
@@ -2060,6 +2356,7 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
       widget.onClose();
       return;
     }
+    final wordbookName = _wordbookName(hostContext, wordbookId);
     if (mounted) setState(() => _added.add(meaningId));
     try {
       await _api.addMeaningToWordbook(
@@ -2078,7 +2375,7 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
       if (!hostContext.mounted) return;
       ScaffoldMessenger.of(
         hostContext,
-      ).showSnackBar(const SnackBar(content: Text('単語帳に追加しました')));
+      ).showSnackBar(SnackBar(content: Text('「$wordbookName」に追加しました')));
     } catch (error) {
       if (mounted) setState(() => _added.remove(meaningId));
       if (!hostContext.mounted) return;
@@ -2094,15 +2391,15 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
   Widget build(BuildContext context) {
     return Material(
       elevation: 8,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.zero,
       color: Theme.of(context).colorScheme.surface,
       child: Container(
         constraints: const BoxConstraints(maxHeight: 460),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: const Color(0xFFE3DED3)),
+          borderRadius: BorderRadius.zero,
+          border: Border.all(color: const Color(0xFFDDE3EA)),
         ),
         child: FutureBuilder<WordLookupResult>(
           future: widget.future,
@@ -2138,6 +2435,29 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                if (!_isKnown) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 9,
+                          vertical: 7,
+                        ),
+                      ),
+                      onPressed: _isMarkingKnown ? null : _markKnown,
+                      icon: _isMarkingKnown
+                          ? const SizedBox.square(
+                              dimension: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.check, size: 16),
+                      label: const Text('知っている'),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 if (snapshot.connectionState != ConnectionState.done)
                   const Column(
@@ -2228,12 +2548,12 @@ class _PopoverMeaningCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: isContextPos ? const Color(0xFFE0ECE8) : const Color(0xFFF8F6F0),
-        borderRadius: BorderRadius.circular(8),
+        color: isContextPos ? const Color(0xFFD4E3FF) : const Color(0xFFF7F9FB),
+        borderRadius: BorderRadius.zero,
         border: Border.all(
           color: isContextPos
-              ? const Color(0xFFB7C8C2)
-              : const Color(0xFFE3DED3),
+              ? const Color(0xFF68ABFF)
+              : const Color(0xFFDDE3EA),
         ),
       ),
       child: Column(
@@ -2243,31 +2563,19 @@ class _PopoverMeaningCard extends StatelessWidget {
             spacing: 6,
             runSpacing: 6,
             children: [
-              Chip(
-                visualDensity: VisualDensity.compact,
-                label: Text(partOfSpeechLabel(meaning.partOfSpeech)),
-              ),
+              AcademicTag(label: partOfSpeechLabel(meaning.partOfSpeech)),
               if (isContextPos)
-                const Chip(
-                  visualDensity: VisualDensity.compact,
-                  avatar: Icon(Icons.check, size: 16),
-                  label: Text('この文の品詞'),
+                const AcademicTag(
+                  emphasized: true,
+                  icon: Icons.check,
+                  label: 'この文の品詞',
                 ),
               if (meaning.source.isNotEmpty)
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(_sourceLabel(meaning.source)),
-                ),
+                AcademicTag(label: _sourceLabel(meaning.source)),
               if (_transitivityLabel(meaning.transitivity) != null)
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(_transitivityLabel(meaning.transitivity)!),
-                ),
+                AcademicTag(label: _transitivityLabel(meaning.transitivity)!),
               if (_countabilityLabel(meaning.countability) != null)
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(_countabilityLabel(meaning.countability)!),
-                ),
+                AcademicTag(label: _countabilityLabel(meaning.countability)!),
             ],
           ),
           const SizedBox(height: 8),
@@ -2296,37 +2604,14 @@ class _PopoverMeaningCard extends StatelessWidget {
             _ExampleView(example: example),
           ],
           const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              FilledButton.icon(
-                onPressed: isAdding || isAdded ? null : onAdd,
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                ),
-                icon: isAdding
-                    ? const SizedBox.square(
-                        dimension: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(
-                        isAdded ? Icons.check : Icons.playlist_add,
-                        size: 18,
-                      ),
-                label: Text(isAdded ? '追加済み' : '単語帳に追加'),
-              ),
-              PopupMenuButton<String>(
-                tooltip: '別の単語帳へ登録',
-                onSelected: (_) => onAddElsewhere(),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'other', child: Text('別の単語帳に登録')),
-                ],
-              ),
-            ],
+          Align(
+            alignment: Alignment.centerRight,
+            child: _WordbookAddIconButton(
+              isAdding: isAdding,
+              isAdded: isAdded,
+              onAdd: onAdd,
+              onAddElsewhere: onAddElsewhere,
+            ),
           ),
         ],
       ),
@@ -2363,6 +2648,74 @@ class _PopoverMeaningCard extends StatelessWidget {
       default:
         return source;
     }
+  }
+}
+
+class _WordbookAddIconButton extends StatelessWidget {
+  final bool isAdding;
+  final bool isAdded;
+  final VoidCallback? onAdd;
+  final VoidCallback? onAddElsewhere;
+
+  const _WordbookAddIconButton({
+    required this.isAdding,
+    required this.isAdded,
+    required this.onAdd,
+    required this.onAddElsewhere,
+  });
+
+  Future<void> _showContextMenu(
+    BuildContext context,
+    TapDownDetails details,
+  ) async {
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        details.globalPosition.dx,
+        details.globalPosition.dy,
+        details.globalPosition.dx,
+        details.globalPosition.dy,
+      ),
+      items: [
+        PopupMenuItem(
+          value: 'default',
+          enabled: onAdd != null && !isAdding && !isAdded,
+          child: const ListTile(
+            leading: Icon(Icons.playlist_add),
+            title: Text('単語帳に追加'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'other',
+          enabled: onAddElsewhere != null && !isAdding,
+          child: const ListTile(
+            leading: Icon(Icons.drive_file_move_outline),
+            title: Text('別の単語帳に追加'),
+          ),
+        ),
+      ],
+    );
+    if (action == 'default') onAdd?.call();
+    if (action == 'other') onAddElsewhere?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (details) => _showContextMenu(context, details),
+      child: IconButton.filled(
+        tooltip: isAdded ? '単語帳に追加済み（右クリックで登録先を選択）' : '単語帳に追加',
+        visualDensity: VisualDensity.compact,
+        onPressed: isAdding || isAdded ? null : onAdd,
+        icon: isAdding
+            ? const SizedBox.square(
+                dimension: 15,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(isAdded ? Icons.check : Icons.playlist_add, size: 18),
+      ),
+    );
   }
 }
 
@@ -2423,6 +2776,7 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
       forceSelection: forceWordbook,
     );
     if (wordbookId == null) return;
+    final wordbookName = _wordbookName(context, wordbookId);
     setState(() => _adding.add(meaningId));
     try {
       await VocamineApiClient().addMeaningToWordbook(
@@ -2442,7 +2796,7 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
       widget.onAdded();
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('単語帳に追加しました')));
+      ).showSnackBar(SnackBar(content: Text('「$wordbookName」に追加しました')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -2499,7 +2853,7 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
                     ) ??
                     false));
         return GestureDetector(
-          behavior: HitTestBehavior.deferToChild,
+          behavior: HitTestBehavior.opaque,
           onTapUp: (details) =>
               widget.onShowDetails(widget.item, details.globalPosition),
           child: Padding(
@@ -2543,13 +2897,17 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 const SizedBox(height: 6),
-                Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 8,
-                  runSpacing: 8,
+                Row(
                   children: [
                     if (!_isKnown)
                       OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 7,
+                          ),
+                        ),
                         onPressed: _isMarkingKnown ? null : _markKnown,
                         icon: _isMarkingKnown
                             ? const SizedBox.square(
@@ -2561,34 +2919,16 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
                             : const Icon(Icons.check, size: 18),
                         label: const Text('知っている'),
                       ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: FilledButton.icon(
-                        onPressed: meaning == null || isAdding || isAdded
-                            ? null
-                            : () => _addMeaning(meaning.id),
-                        icon: isAdding
-                            ? const SizedBox.square(
-                                dimension: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : Icon(
-                                isAdded ? Icons.check : Icons.playlist_add,
-                                size: 18,
-                              ),
-                        label: Text(isAdded ? '追加済み' : '単語帳に追加'),
-                      ),
-                    ),
-                    PopupMenuButton<String>(
-                      tooltip: '別の単語帳へ登録',
-                      onSelected: meaning == null
+                    const Spacer(),
+                    _WordbookAddIconButton(
+                      isAdding: isAdding,
+                      isAdded: isAdded,
+                      onAdd: meaning == null
                           ? null
-                          : (_) => _addMeaning(meaning.id, forceWordbook: true),
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'other', child: Text('別の単語帳に登録')),
-                      ],
+                          : () => _addMeaning(meaning.id),
+                      onAddElsewhere: meaning == null
+                          ? null
+                          : () => _addMeaning(meaning.id, forceWordbook: true),
                     ),
                   ],
                 ),
@@ -2753,33 +3093,34 @@ class _MeaningSheetState extends State<_MeaningSheet> {
                               spacing: 8,
                               runSpacing: 8,
                               children: [
-                                Chip(
-                                  label: Text(
-                                    _partOfSpeechLabel(meaning.partOfSpeech),
+                                AcademicTag(
+                                  label: _partOfSpeechLabel(
+                                    meaning.partOfSpeech,
                                   ),
                                 ),
                                 if (isContextPos)
-                                  Chip(
-                                    avatar: const Icon(Icons.check, size: 18),
-                                    label: const Text('この文の品詞'),
+                                  const AcademicTag(
+                                    emphasized: true,
+                                    icon: Icons.check,
+                                    label: 'この文の品詞',
                                   ),
                                 if (meaning.source.isNotEmpty)
-                                  Chip(
-                                    label: Text(_sourceLabel(meaning.source)),
+                                  AcademicTag(
+                                    label: _sourceLabel(meaning.source),
                                   ),
                                 if (_transitivityLabel(meaning.transitivity) !=
                                     null)
-                                  Chip(
-                                    label: Text(
-                                      _transitivityLabel(meaning.transitivity)!,
-                                    ),
+                                  AcademicTag(
+                                    label: _transitivityLabel(
+                                      meaning.transitivity,
+                                    )!,
                                   ),
                                 if (_countabilityLabel(meaning.countability) !=
                                     null)
-                                  Chip(
-                                    label: Text(
-                                      _countabilityLabel(meaning.countability)!,
-                                    ),
+                                  AcademicTag(
+                                    label: _countabilityLabel(
+                                      meaning.countability,
+                                    )!,
                                   ),
                               ],
                             ),

@@ -9,21 +9,25 @@ class WordbookLibraryState {
   final List<AppFolder> folders;
   final List<Wordbook> wordbooks;
   final bool isLoading;
+  final Set<String> movingWordbookIds;
 
   const WordbookLibraryState({
     this.folders = const [],
     this.wordbooks = const [],
     this.isLoading = false,
+    this.movingWordbookIds = const {},
   });
 
   WordbookLibraryState copyWith({
     List<AppFolder>? folders,
     List<Wordbook>? wordbooks,
     bool? isLoading,
+    Set<String>? movingWordbookIds,
   }) => WordbookLibraryState(
     folders: folders ?? this.folders,
     wordbooks: wordbooks ?? this.wordbooks,
     isLoading: isLoading ?? this.isLoading,
+    movingWordbookIds: movingWordbookIds ?? this.movingWordbookIds,
   );
 }
 
@@ -66,17 +70,44 @@ class WordbookLibraryNotifier extends Notifier<WordbookLibraryState> {
       wordbookId: id,
       name: name,
     );
-    await load();
+    await load(force: true);
   }
 
   Future<void> moveWordbook(String id, String? folderId) async {
-    await _api.updateIndependentWordbook(
-      userId: ref.read(appSessionProvider).userId,
-      wordbookId: id,
+    final index = state.wordbooks.indexWhere((book) => book.id == id);
+    if (index < 0) return;
+    final original = state.wordbooks[index];
+    final optimistic = original.copyWith(
       folderId: folderId,
-      updateFolder: true,
+      clearFolder: folderId == null,
     );
-    await load();
+    state = state.copyWith(
+      wordbooks: [
+        for (final book in state.wordbooks)
+          if (book.id == id) optimistic else book,
+      ],
+      movingWordbookIds: {...state.movingWordbookIds, id},
+    );
+    try {
+      await _api.updateIndependentWordbook(
+        userId: ref.read(appSessionProvider).userId,
+        wordbookId: id,
+        folderId: folderId,
+        updateFolder: true,
+      );
+    } catch (_) {
+      state = state.copyWith(
+        wordbooks: [
+          for (final book in state.wordbooks)
+            if (book.id == id) original else book,
+        ],
+      );
+      rethrow;
+    } finally {
+      state = state.copyWith(
+        movingWordbookIds: {...state.movingWordbookIds}..remove(id),
+      );
+    }
   }
 
   Future<void> deleteWordbook(String id) async {
@@ -104,7 +135,7 @@ class WordbookLibraryNotifier extends Notifier<WordbookLibraryState> {
       folderId: id,
       name: name,
     );
-    await load();
+    await load(force: true);
   }
 
   Future<void> moveFolder(String id, String? parentId) async {
@@ -114,7 +145,7 @@ class WordbookLibraryNotifier extends Notifier<WordbookLibraryState> {
       parentId: parentId,
       updateParent: true,
     );
-    await load();
+    await load(force: true);
   }
 
   Future<void> deleteFolder(String id) async {
@@ -122,7 +153,7 @@ class WordbookLibraryNotifier extends Notifier<WordbookLibraryState> {
       userId: ref.read(appSessionProvider).userId,
       folderId: id,
     );
-    await load();
+    await load(force: true);
   }
 }
 

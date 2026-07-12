@@ -1,21 +1,27 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/lexical_analysis.dart';
 import '../models/word.dart';
 import '../models/word_lookup.dart';
+import '../providers/material_library_provider.dart';
 import '../providers/words_provider.dart';
 import '../services/app_session.dart';
 import '../services/vocamine_api_client.dart';
 import '../utils/part_of_speech_label.dart';
+import '../widgets/academic_tag.dart';
 import 'word_study_screen.dart';
 
 class WordbookScreen extends ConsumerStatefulWidget {
   final String wordbookId;
   final String title;
+  final List<Word>? combinedWords;
 
   const WordbookScreen({
     super.key,
     required this.wordbookId,
     required this.title,
+    this.combinedWords,
   });
 
   @override
@@ -25,6 +31,137 @@ class WordbookScreen extends ConsumerStatefulWidget {
 class _WordbookScreenState extends ConsumerState<WordbookScreen> {
   String _query = '';
   String? _partOfSpeechFilter;
+  final Set<String> _selectedMaterialIds = {};
+  int _minimumOccurrenceCount = 0;
+  final TextEditingController _minimumOccurrenceController =
+      TextEditingController(text: '0');
+  bool _sortByOccurrence = false;
+  bool _occurrenceDescending = true;
+
+  String _normalizeWord(String value) =>
+      value.trim().toLowerCase().replaceAll('’', "'");
+
+  int _occurrenceCount(
+    Word word,
+    Map<String, AsyncValue<ExtractWordsResult>> analyses,
+  ) {
+    final target = _normalizeWord(word.headword);
+    var count = 0;
+    for (final materialId in _selectedMaterialIds) {
+      final analysis = analyses[materialId]?.value;
+      if (analysis == null) continue;
+      for (final item in analysis.items) {
+        final forms = <String>{
+          _normalizeWord(item.text),
+          ...item.surfaceForms.map(_normalizeWord),
+        };
+        if (forms.contains(target) &&
+            (word.partOfSpeech.isEmpty ||
+                item.partOfSpeech.isEmpty ||
+                item.partOfSpeech == word.partOfSpeech)) {
+          count += item.occurrences.length;
+        }
+      }
+    }
+    return count;
+  }
+
+  Future<void> _selectOccurrenceMaterials(List<Word> words) async {
+    final notifier = ref.read(materialLibraryProvider.notifier);
+    await notifier.load();
+    if (!mounted) return;
+    final materials = ref.read(materialLibraryProvider).materials;
+    final availableIds = materials.map((material) => material.id).toSet();
+    final originIds = words
+        .expand((word) => word.sourceMaterialIds)
+        .where(availableIds.contains)
+        .toSet();
+    final selection = Set<String>.from(_selectedMaterialIds);
+    final selected = await showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('出現回数を集計する教材'),
+          content: SizedBox(
+            width: 520,
+            height: 480,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: originIds.isEmpty
+                          ? null
+                          : () => setDialogState(() {
+                              selection
+                                ..clear()
+                                ..addAll(originIds);
+                            }),
+                      icon: const Icon(Icons.auto_awesome_motion, size: 18),
+                      label: const Text('この単語帳が由来する教材を全て選択'),
+                    ),
+                    TextButton(
+                      onPressed: () => setDialogState(() => selection.clear()),
+                      child: const Text('選択解除'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('${selection.length}件を選択中'),
+                const Divider(),
+                Expanded(
+                  child: materials.isEmpty
+                      ? const Center(child: Text('教材がありません'))
+                      : ListView.builder(
+                          itemCount: materials.length,
+                          itemBuilder: (context, index) {
+                            final material = materials[index];
+                            return CheckboxListTile(
+                              value: selection.contains(material.id),
+                              title: Text(material.title),
+                              subtitle: originIds.contains(material.id)
+                                  ? const Text('この単語帳の登録元教材')
+                                  : null,
+                              onChanged: (checked) => setDialogState(() {
+                                if (checked == true) {
+                                  selection.add(material.id);
+                                } else {
+                                  selection.remove(material.id);
+                                }
+                              }),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, selection),
+              child: const Text('集計する'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _selectedMaterialIds
+        ..clear()
+        ..addAll(selected);
+    });
+    for (final materialId in selected) {
+      await notifier.analyzeMaterial(materialId);
+    }
+  }
 
   Future<void> _startStudy(List<Word> words, WordStudyMode mode) async {
     if (words.isEmpty) return;
@@ -67,6 +204,7 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
     super.initState();
     Future.microtask(() {
       _loadWords();
+      ref.read(materialLibraryProvider.notifier).load();
     });
   }
 
@@ -78,7 +216,14 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
     }
   }
 
+  @override
+  void dispose() {
+    _minimumOccurrenceController.dispose();
+    super.dispose();
+  }
+
   void _loadWords() {
+    if (widget.combinedWords != null) return;
     bool? isLearned = false;
     String? sourceType;
     String? sourceMaterialId;
@@ -126,32 +271,19 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final wordsState = ref.watch(wordsProvider);
+    final materialLibrary = ref.watch(materialLibraryProvider);
+    final wordsState = widget.combinedWords == null
+        ? ref.watch(wordsProvider)
+        : AsyncValue<List<Word>>.data(widget.combinedWords!);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
-          PopupMenuButton<WordStudyMode>(
-            tooltip: '学習モード',
-            onSelected: (mode) {
-              final words = ref.read(wordsProvider).value ?? const <Word>[];
-              _startStudy(words, mode);
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: WordStudyMode.flashcards,
-                child: Text('フラッシュカード'),
-              ),
-              PopupMenuItem(value: WordStudyMode.quiz, child: Text('4択問題')),
-              PopupMenuItem(value: WordStudyMode.test, child: Text('テスト')),
-            ],
-            icon: const Icon(Icons.school),
-          ),
           IconButton(
             tooltip: '更新',
             icon: const Icon(Icons.refresh),
-            onPressed: _loadWords,
+            onPressed: widget.combinedWords == null ? _loadWords : null,
           ),
         ],
       ),
@@ -166,6 +298,10 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                   .toSet()
                   .toList()
                 ..sort();
+          final occurrenceCounts = <String, int>{
+            for (final word in words)
+              word.studyKey: _occurrenceCount(word, materialLibrary.analyses),
+          };
           final filtered = words.where((word) {
             final query = _query.trim().toLowerCase();
             final matchesQuery =
@@ -174,8 +310,17 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                 word.meaningJa.toLowerCase().contains(query);
             return matchesQuery &&
                 (_partOfSpeechFilter == null ||
-                    word.partOfSpeech == _partOfSpeechFilter);
+                    word.partOfSpeech == _partOfSpeechFilter) &&
+                occurrenceCounts[word.studyKey]! >= _minimumOccurrenceCount;
           }).toList();
+          if (_sortByOccurrence) {
+            filtered.sort((a, b) {
+              final comparison = occurrenceCounts[a.studyKey]!.compareTo(
+                occurrenceCounts[b.studyKey]!,
+              );
+              return _occurrenceDescending ? -comparison : comparison;
+            });
+          }
           return Column(
             children: [
               Padding(
@@ -217,10 +362,80 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                   horizontal: 24,
                   vertical: 4,
                 ),
-                child: Row(
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Text('${filtered.length}語'),
-                    const Spacer(),
+                    OutlinedButton.icon(
+                      onPressed: () => _selectOccurrenceMaterials(words),
+                      icon: const Icon(Icons.library_books_outlined, size: 18),
+                      label: Text(
+                        _selectedMaterialIds.isEmpty
+                            ? '教材を選択'
+                            : '教材 ${_selectedMaterialIds.length}件',
+                      ),
+                    ),
+                    SizedBox(
+                      width: 160,
+                      child: TextField(
+                        controller: _minimumOccurrenceController,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                        ],
+                        decoration: const InputDecoration(
+                          labelText: '最低出現回数',
+                          suffixText: '回以上',
+                          isDense: true,
+                        ),
+                        onChanged: (value) => setState(
+                          () => _minimumOccurrenceCount =
+                              int.tryParse(value) ?? 0,
+                        ),
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: '並び替え',
+                      onSelected: (value) => setState(() {
+                        if (value == 'default') {
+                          _sortByOccurrence = false;
+                        } else {
+                          _sortByOccurrence = true;
+                          _occurrenceDescending = value == 'desc';
+                        }
+                      }),
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'default', child: Text('登録順')),
+                        PopupMenuItem(value: 'desc', child: Text('出現回数が多い順')),
+                        PopupMenuItem(value: 'asc', child: Text('出現回数が少ない順')),
+                      ],
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFECEEF0),
+                          border: Border.all(color: const Color(0xFFC4C6CD)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.sort, size: 16),
+                            const SizedBox(width: 6),
+                            Text(
+                              !_sortByOccurrence
+                                  ? '登録順'
+                                  : _occurrenceDescending
+                                  ? '出現回数が多い順'
+                                  : '出現回数が少ない順',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                     TextButton.icon(
                       onPressed: filtered.isEmpty
                           ? null
@@ -287,10 +502,9 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                                       ).textTheme.bodyMedium,
                                     ),
                                     const SizedBox(height: 8),
-                                    Chip(
-                                      visualDensity: VisualDensity.compact,
-                                      label: Text(
-                                        partOfSpeechLabel(word.partOfSpeech),
+                                    AcademicTag(
+                                      label: partOfSpeechLabel(
+                                        word.partOfSpeech,
                                       ),
                                     ),
                                     if (word.dictionarySource.isNotEmpty)
@@ -309,6 +523,14 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                                         style: Theme.of(
                                           context,
                                         ).textTheme.bodySmall,
+                                      ),
+                                    ],
+                                    if (_selectedMaterialIds.isNotEmpty) ...[
+                                      const SizedBox(height: 8),
+                                      AcademicTag(
+                                        icon: Icons.repeat,
+                                        label:
+                                            '選択教材で ${occurrenceCounts[word.studyKey]}回出現',
                                       ),
                                     ],
                                   ],
@@ -348,11 +570,13 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
           );
         },
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showManualAddDialog,
-        icon: const Icon(Icons.add),
-        label: const Text('単語を追加'),
-      ),
+      floatingActionButton: widget.combinedWords == null
+          ? FloatingActionButton.extended(
+              onPressed: _showManualAddDialog,
+              icon: const Icon(Icons.add),
+              label: const Text('単語を追加'),
+            )
+          : null,
     );
   }
 }

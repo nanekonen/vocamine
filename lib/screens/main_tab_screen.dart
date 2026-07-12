@@ -36,45 +36,27 @@ class _MainTabScreenState extends State<MainTabScreen> {
         body: Row(
           children: [
             Container(
-              width: 248,
+              width: 280,
               decoration: const BoxDecoration(
-                color: Color(0xFFFCFAF6),
-                border: Border(right: BorderSide(color: Color(0xFFE3DED3))),
+                color: Colors.white,
+                border: Border(right: BorderSide(color: Color(0xFFDDE3EA))),
               ),
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 22, 18, 18),
+                  padding: const EdgeInsets.fromLTRB(16, 32, 16, 24),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primary,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(
-                              Icons.school_outlined,
-                              color: Colors.white,
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            'Vocamine',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                        ],
+                      Text(
+                        'Vocamine',
+                        style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 48),
                       ...List.generate(_destinations.length, (i) {
                         final destination = _destinations[i];
                         final selected = _index == i;
                         return Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
+                          padding: const EdgeInsets.only(bottom: 8),
                           child: _SideNavItem(
                             icon: (destination.icon as Icon).icon!,
                             label: destination.label,
@@ -121,29 +103,39 @@ class _SideNavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final primary = Theme.of(context).colorScheme.primary;
     return InkWell(
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.zero,
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFE0ECE8) : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: selected ? const Color(0xFFB7C8C2) : Colors.transparent,
+          color: selected ? const Color(0xFFFFE16D) : Colors.transparent,
+          borderRadius: BorderRadius.zero,
+          border: Border(
+            left: BorderSide(
+              color: selected ? const Color(0xFF0060AC) : Colors.transparent,
+              width: 3,
+            ),
           ),
         ),
         child: Row(
           children: [
-            Icon(icon, size: 20, color: selected ? primary : null),
+            Icon(
+              icon,
+              size: 22,
+              color: selected
+                  ? const Color(0xFF041627)
+                  : const Color(0xFF5B6570),
+            ),
             const SizedBox(width: 12),
             Text(
               label,
               style: TextStyle(
-                color: selected ? primary : const Color(0xFF4A504B),
-                fontWeight: FontWeight.w700,
+                color: selected
+                    ? const Color(0xFF041627)
+                    : const Color(0xFF44474C),
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
               ),
             ),
           ],

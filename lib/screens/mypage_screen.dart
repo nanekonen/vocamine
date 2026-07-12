@@ -27,9 +27,12 @@ class _MyPageScreenState extends ConsumerState<MyPageScreen> {
               padding: const EdgeInsets.all(18),
               child: Row(
                 children: [
-                  const CircleAvatar(
-                    radius: 28,
-                    child: Icon(Icons.person_outline, size: 28),
+                  Container(
+                    width: 56,
+                    height: 56,
+                    color: const Color(0xFFECEEF0),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.person_outline, size: 28),
                   ),
                   const SizedBox(width: 16),
                   Expanded(
@@ -37,7 +40,9 @@ class _MyPageScreenState extends ConsumerState<MyPageScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          session.isLoggedIn ? 'Googleユーザー' : 'ゲストユーザー',
+                          session.isLoggedIn
+                              ? session.username ?? 'ユーザー名未設定'
+                              : 'ゲストユーザー',
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         Text(

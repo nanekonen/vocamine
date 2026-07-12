@@ -3,8 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../providers/wordbook_library_provider.dart';
+import '../models/word.dart';
 import '../models/wordbook.dart';
 import '../services/app_session.dart';
+import '../services/browser_context_menu_lease.dart';
+import '../services/vocamine_api_client.dart';
+import '../widgets/academic_item_icon.dart';
+import 'wordbook_screen.dart';
 
 class WordbookListScreen extends ConsumerStatefulWidget {
   final String? folderId;
@@ -18,11 +23,94 @@ class WordbookListScreen extends ConsumerStatefulWidget {
 
 class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
   bool get _isRoot => widget.folderId == null;
+  bool _loadingFolderStudy = false;
+
+  Set<String> _descendantFolderIds(String rootId) {
+    final folders = ref.read(wordbookLibraryProvider).folders;
+    final ids = <String>{rootId};
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final folder in folders) {
+        if (folder.parentId != null &&
+            ids.contains(folder.parentId) &&
+            ids.add(folder.id)) {
+          changed = true;
+        }
+      }
+    }
+    return ids;
+  }
+
+  Future<void> _studyFolder() async {
+    final folderId = widget.folderId;
+    if (folderId == null || _loadingFolderStudy) return;
+    final library = ref.read(wordbookLibraryProvider);
+    final folderIds = _descendantFolderIds(folderId);
+    final books = library.wordbooks
+        .where((book) => folderIds.contains(book.folderId))
+        .toList();
+    if (books.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('学習できる単語帳がありません')));
+      return;
+    }
+    setState(() => _loadingFolderStudy = true);
+    try {
+      final userId = ref.read(appSessionProvider).userId;
+      final lists = await Future.wait([
+        for (final book in books)
+          VocamineApiClient().fetchWordbook(
+            userId: userId,
+            isLearned: false,
+            wordbookId: book.id,
+          ),
+      ]);
+      final combined = <Word>[];
+      for (var index = 0; index < books.length; index++) {
+        final book = books[index];
+        for (final word in lists[index]) {
+          combined.add(word.copyWith(studyKey: '${book.id}:${word.id}'));
+        }
+      }
+      if (!mounted) return;
+      if (combined.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('未学習の単語がありません')));
+        return;
+      }
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => WordbookScreen(
+            wordbookId: 'folder-combined:$folderId',
+            title: widget.title,
+            combinedWords: combined,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('フォルダの読み込みに失敗しました: $error')));
+    } finally {
+      if (mounted) setState(() => _loadingFolderStudy = false);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    BrowserContextMenuLease.acquire();
     Future.microtask(_load);
+  }
+
+  @override
+  void dispose() {
+    BrowserContextMenuLease.release();
+    super.dispose();
   }
 
   @override
@@ -34,7 +122,52 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
   }
 
   void _load() {
-    ref.read(wordbookLibraryProvider.notifier).load();
+    ref.read(wordbookLibraryProvider.notifier).load(force: true);
+  }
+
+  Future<void> _showBackgroundMenu(Offset position) async {
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
+      items: [
+        const PopupMenuItem(
+          value: 'create_wordbook',
+          child: ListTile(
+            leading: Icon(Icons.library_add_outlined),
+            title: Text('単語帳を作成'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'create_folder',
+          child: ListTile(
+            leading: Icon(Icons.create_new_folder_outlined),
+            title: Text('フォルダを作成'),
+          ),
+        ),
+        if (!_isRoot)
+          const PopupMenuItem(
+            value: 'study_folder',
+            child: ListTile(
+              leading: Icon(Icons.school_outlined),
+              title: Text('フォルダ内をまとめて学習'),
+            ),
+          ),
+      ],
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'create_wordbook':
+        await _createWordbook();
+      case 'create_folder':
+        await _createFolder();
+      case 'study_folder':
+        await _studyFolder();
+    }
   }
 
   Future<void> _createWordbook() async {
@@ -234,6 +367,9 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
       }
     });
     final library = ref.watch(wordbookLibraryProvider);
+    final horizontalPadding = MediaQuery.sizeOf(context).width >= 900
+        ? 40.0
+        : 16.0;
     final wordbooks = <Wordbook>[
       ...library.folders
           .where((folder) => folder.parentId == widget.folderId)
@@ -252,15 +388,15 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
-          IconButton(
-            tooltip: '単語帳を作成',
+          TextButton.icon(
+            onPressed: _createWordbook,
             icon: const Icon(Icons.library_add_outlined),
-            onPressed: () => _createWordbook(),
+            label: const Text('単語帳を作成'),
           ),
-          IconButton(
-            tooltip: 'フォルダを作成',
+          TextButton.icon(
+            onPressed: _createFolder,
             icon: const Icon(Icons.create_new_folder_outlined),
-            onPressed: () => _createFolder(),
+            label: const Text('フォルダを作成'),
           ),
           IconButton(
             tooltip: '更新',
@@ -269,78 +405,127 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => _load(),
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.auto_stories_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  _isRoot ? '単語帳' : widget.title,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-              ],
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onSecondaryTapDown: (details) =>
+            _showBackgroundMenu(details.globalPosition),
+        child: RefreshIndicator(
+          onRefresh: () async => _load(),
+          child: ListView(
+            padding: EdgeInsets.fromLTRB(
+              horizontalPadding,
+              24,
+              horizontalPadding,
+              32,
             ),
-            const SizedBox(height: 18),
-            if (wordbooks.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                child: Text(
-                  _isRoot ? '単語帳はまだありません' : 'このフォルダには教材がありません',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              )
-            else
-              Wrap(
-                spacing: 14,
-                runSpacing: 14,
+            children: [
+              Row(
                 children: [
-                  ...wordbooks.map(
-                    (book) => _WordbookTile(
-                      icon: book.sourceFolderId != null
-                          ? Icons.folder_outlined
-                          : book.sourceType == 'deleted_material'
-                          ? Icons.delete_outline
-                          : Icons.menu_book_outlined,
-                      title: book.name,
-                      subtitle: book.sourceFolderId != null
-                          ? '教材フォルダ'
-                          : book.sourceType == 'deleted_material'
-                          ? '削除後も単語を保持'
-                          : '教材',
-                      accentColor: book.sourceFolderId != null
-                          ? const Color(0xFFC4934E)
-                          : Theme.of(context).colorScheme.primary,
-                      onTap: () {
-                        if (book.sourceFolderId != null) {
-                          context.push(
-                            '/wordbook/folder',
-                            extra: {
-                              'folderId': book.sourceFolderId,
-                              'title': book.name,
-                            },
-                          );
-                          return;
-                        }
-                        context.push(
-                          '/wordbook/detail',
-                          extra: {'wordbookId': book.id, 'title': book.name},
-                        );
-                      },
-                      onMenuSelected: (action) => _handleAction(action, book),
-                    ),
+                  Icon(
+                    Icons.auto_stories_outlined,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
+                  const SizedBox(width: 10),
+                  Text(
+                    _isRoot ? '単語帳' : widget.title,
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  if (!_isRoot) ...[
+                    const Spacer(),
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 22,
+                          vertical: 16,
+                        ),
+                        textStyle: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      onPressed: _loadingFolderStudy ? null : _studyFolder,
+                      icon: _loadingFolderStudy
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.school_outlined),
+                      label: const Text('フォルダ内をまとめて学習'),
+                    ),
+                  ],
                 ],
               ),
-          ],
+              const SizedBox(height: 32),
+              if (wordbooks.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Text(
+                    _isRoot ? '単語帳はまだありません' : 'このフォルダには教材がありません',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                )
+              else
+                Wrap(
+                  spacing: 24,
+                  runSpacing: 24,
+                  children: [
+                    ...wordbooks.map(
+                      (book) => GestureDetector(
+                        onSecondaryTapDown: (_) {},
+                        child: _WordbookTile(
+                          icon: book.sourceFolderId != null
+                              ? Icons.folder_outlined
+                              : book.sourceType == 'deleted_material'
+                              ? Icons.delete_outline
+                              : Icons.menu_book_outlined,
+                          title: book.name,
+                          subtitle: library.movingWordbookIds.contains(book.id)
+                              ? '移動中…'
+                              : book.sourceFolderId != null
+                              ? '単語帳フォルダ'
+                              : book.sourceType == 'deleted_material'
+                              ? '削除後も単語を保持'
+                              : '単語帳',
+                          accentColor: book.sourceFolderId != null
+                              ? const Color(0xFFC9A900)
+                              : book.sourceType == 'deleted_material'
+                              ? Theme.of(context).colorScheme.error
+                              : Theme.of(context).colorScheme.primary,
+                          onTap: () {
+                            if (library.movingWordbookIds.contains(book.id)) {
+                              return;
+                            }
+                            if (book.sourceFolderId != null) {
+                              context.push(
+                                '/wordbook/folder',
+                                extra: {
+                                  'folderId': book.sourceFolderId,
+                                  'title': book.name,
+                                },
+                              );
+                              return;
+                            }
+                            context.push(
+                              '/wordbook/detail',
+                              extra: {
+                                'wordbookId': book.id,
+                                'title': book.name,
+                              },
+                            );
+                          },
+                          onMenuSelected:
+                              library.movingWordbookIds.contains(book.id)
+                              ? null
+                              : (action) => _handleAction(action, book),
+                          isLoading: library.movingWordbookIds.contains(
+                            book.id,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -354,6 +539,7 @@ class _WordbookTile extends StatelessWidget {
   final Color accentColor;
   final VoidCallback onTap;
   final ValueChanged<String>? onMenuSelected;
+  final bool isLoading;
 
   const _WordbookTile({
     required this.icon,
@@ -362,6 +548,7 @@ class _WordbookTile extends StatelessWidget {
     required this.accentColor,
     required this.onTap,
     this.onMenuSelected,
+    this.isLoading = false,
   });
 
   @override
@@ -374,27 +561,42 @@ class _WordbookTile extends StatelessWidget {
         : width - 48;
     return SizedBox(
       width: tileWidth,
+      height: 128,
       child: Card(
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.zero,
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.all(24),
             child: Row(
               children: [
                 Container(
-                  width: 42,
-                  height: 42,
+                  width: 52,
+                  height: 52,
                   decoration: BoxDecoration(
                     color: accentColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.zero,
                     border: Border.all(
                       color: accentColor.withValues(alpha: 0.26),
                     ),
                   ),
-                  child: Icon(icon, color: accentColor, size: 22),
+                  child: isLoading
+                      ? Padding(
+                          padding: const EdgeInsets.all(11),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: accentColor,
+                          ),
+                        )
+                      : AcademicItemIcon(
+                          kind: icon == Icons.folder_outlined
+                              ? AcademicItemIconKind.folder
+                              : AcademicItemIconKind.wordbook,
+                          color: accentColor,
+                          size: 27,
+                        ),
                 ),
-                const SizedBox(width: 14),
+                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

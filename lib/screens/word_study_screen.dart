@@ -3,12 +3,17 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../models/word.dart';
 import '../services/vocamine_api_client.dart';
+import '../services/word_speech.dart';
 import '../utils/part_of_speech_label.dart';
+import '../widgets/academic_tag.dart';
 
 enum WordStudyMode { flashcards, quiz, test }
+
+enum _FinishAction { close, retryWrong, markLearned }
 
 String dictionarySourceLabel(String source) {
   const labels = {
@@ -30,15 +35,10 @@ String dictionarySourceLabel(String source) {
 class WordSpeaker {
   WordSpeaker._();
   static final instance = WordSpeaker._();
-  final AudioPlayer _player = AudioPlayer();
+  final WordSpeech _speech = WordSpeech();
 
   Future<void> speak(Word word) async {
-    final meaningId = word.meaningId;
-    if (meaningId == null) return;
-    await _player.stop();
-    await _player.play(
-      UrlSource('${VocamineApiClient.baseUrl}/words/pronunciation/$meaningId'),
-    );
+    await _speech.speak(word);
   }
 }
 
@@ -135,16 +135,25 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
             Text(word.ipa!, style: Theme.of(context).textTheme.titleMedium),
           ],
           const SizedBox(height: 16),
-          Chip(label: Text(partOfSpeechLabel(word.partOfSpeech))),
+          AcademicTag(label: partOfSpeechLabel(word.partOfSpeech)),
           const SizedBox(height: 24),
           Text('日本語', style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 6),
-          Text(word.meaningJa, style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            word.meaningJa,
+            style: GoogleFonts.sourceSerif4(
+              textStyle: Theme.of(context).textTheme.titleLarge,
+              height: 1.55,
+            ),
+          ),
           if (word.definitionEn?.trim().isNotEmpty == true) ...[
             const SizedBox(height: 24),
             Text('English', style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: 6),
-            Text(word.definitionEn!),
+            Text(
+              word.definitionEn!,
+              style: GoogleFonts.sourceSerif4(fontSize: 17, height: 1.65),
+            ),
           ],
           if (word.examples.isNotEmpty) ...[
             const SizedBox(height: 24),
@@ -157,7 +166,13 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(example.sentence),
+                      Text(
+                        example.sentence,
+                        style: GoogleFonts.sourceSerif4(
+                          fontSize: 17,
+                          height: 1.6,
+                        ),
+                      ),
                       if (example.translatedSentence?.trim().isNotEmpty ==
                           true) ...[
                         const SizedBox(height: 6),
@@ -190,7 +205,7 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
               runSpacing: 8,
               children: [
                 for (final source in word.sourceLabels)
-                  Chip(label: Text(source)),
+                  AcademicTag(label: source),
               ],
             ),
           if (word.tier != null) ...[
@@ -222,6 +237,7 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
   bool _loadingDistractors = false;
   Color? _feedbackColor;
   final Set<String> _correct = {};
+  final Set<String> _mastered = {};
 
   Word get _current => _words[_index];
 
@@ -279,10 +295,13 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
 
   void _answer(Word choice) {
     if (_selected != null) return;
-    final correct = choice.id == _current.id;
+    final correct = choice.studyKey == _current.studyKey;
     setState(() {
-      _selected = choice.meaningId ?? choice.id.hashCode;
-      if (correct) _correct.add(_current.id);
+      _selected = choice.studyKey.hashCode;
+      if (correct) {
+        _correct.add(_current.studyKey);
+        _mastered.add(_current.studyKey);
+      }
     });
     _showFeedback(correct);
   }
@@ -298,21 +317,27 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
         typed.isNotEmpty && answers.any((answer) => answer == typed);
     setState(() {
       _revealed = true;
-      if (correct) _correct.add(_current.id);
+      if (correct) {
+        _correct.add(_current.studyKey);
+        _mastered.add(_current.studyKey);
+      }
     });
     _showFeedback(correct);
   }
 
   void _markCurrentCorrect() {
-    setState(() => _correct.add(_current.id));
+    setState(() {
+      _correct.add(_current.studyKey);
+      _mastered.add(_current.studyKey);
+    });
     _showFeedback(true);
   }
 
   void _showFeedback(bool correct) {
     AnswerFeedbackPlayer.instance.play(correct);
     final color = correct
-        ? Colors.green.withValues(alpha: .18)
-        : Colors.red.withValues(alpha: .18);
+        ? const Color(0xFF68ABFF).withValues(alpha: .18)
+        : const Color(0xFFBA1A1A).withValues(alpha: .14);
     setState(() => _feedbackColor = color);
     Future<void>.delayed(const Duration(milliseconds: 420), () {
       if (mounted && _feedbackColor == color) {
@@ -336,40 +361,67 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
   }
 
   Future<void> _finish() async {
-    if (widget.mode != WordStudyMode.test) {
-      if (mounted) Navigator.of(context).pop(false);
-      return;
-    }
-    final shouldLearn = await showDialog<bool>(
+    final wrong = _words
+        .where((word) => !_correct.contains(word.studyKey))
+        .toList();
+    final action = await showDialog<_FinishAction>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: const Text('テスト結果'),
+        title: Text(widget.mode == WordStudyMode.test ? 'テスト結果' : '学習結果'),
         content: Text(
-          '${_words.length}問中 ${_correct.length}問正解\n\n'
-          '正解した単語を学習済みにして、この単語帳から非表示にしますか？',
+          '${_words.length}問中 ${_correct.length}問正解'
+          '${wrong.isEmpty ? '\n全問正解です！' : '\n${wrong.length}問を間違えました。'}'
+          '${widget.mode == WordStudyMode.test ? '\n\n正解した単語を学習済みにすることもできます。' : ''}',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('そのまま残す'),
+            onPressed: () => Navigator.pop(context, _FinishAction.close),
+            child: const Text('終了'),
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('学習済みにする'),
-          ),
+          if (wrong.isNotEmpty)
+            OutlinedButton.icon(
+              onPressed: () => Navigator.pop(context, _FinishAction.retryWrong),
+              icon: const Icon(Icons.replay),
+              label: const Text('間違えた問題だけやり直す'),
+            ),
+          if (widget.mode == WordStudyMode.test)
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(context, _FinishAction.markLearned),
+              child: const Text('正解した単語を学習済みにする'),
+            ),
         ],
       ),
     );
-    if (shouldLearn == true) {
-      for (final word in _words.where((word) => _correct.contains(word.id))) {
+    if (action == _FinishAction.retryWrong) {
+      setState(() {
+        _words
+          ..clear()
+          ..addAll(wrong)
+          ..shuffle();
+        _index = 0;
+        _correct.clear();
+        _selected = null;
+        _revealed = false;
+        _answerController.clear();
+      });
+      _speak();
+      return;
+    }
+    if (action == _FinishAction.markLearned) {
+      for (final word in widget.words.where(
+        (word) => _mastered.contains(word.studyKey),
+      )) {
         await VocamineApiClient().updateWordbookEntry(
           entryId: word.id,
           isLearned: true,
         );
       }
     }
-    if (mounted) Navigator.of(context).pop(shouldLearn == true);
+    if (mounted) {
+      Navigator.of(context).pop(action == _FinishAction.markLearned);
+    }
   }
 
   @override
@@ -454,12 +506,15 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
                           style: _selected == null
                               ? null
                               : OutlinedButton.styleFrom(
-                                  backgroundColor: choice.id == _current.id
-                                      ? Colors.green.withValues(alpha: .15)
-                                      : ((_selected ==
-                                                (choice.meaningId ??
-                                                    choice.id.hashCode))
-                                            ? Colors.red.withValues(alpha: .15)
+                                  backgroundColor:
+                                      choice.studyKey == _current.studyKey
+                                      ? const Color(
+                                          0xFF68ABFF,
+                                        ).withValues(alpha: .16)
+                                      : ((_selected == choice.studyKey.hashCode)
+                                            ? const Color(
+                                                0xFFBA1A1A,
+                                              ).withValues(alpha: .12)
                                             : null),
                                 ),
                           onPressed: () => _answer(choice),
@@ -489,7 +544,7 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
                 if ((_selected != null && isQuiz) || (_revealed && isTest)) ...[
                   const SizedBox(height: 20),
                   _AnswerDetail(word: _current),
-                  if (isTest && !_correct.contains(_current.id))
+                  if (isTest && !_correct.contains(_current.studyKey))
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton.icon(
@@ -514,7 +569,8 @@ class _WordStudyScreenState extends State<WordStudyScreen> {
                       Expanded(
                         child: FilledButton.icon(
                           onPressed: () {
-                            _correct.add(_current.id);
+                            _correct.add(_current.studyKey);
+                            _mastered.add(_current.studyKey);
                             _next();
                           },
                           icon: const Icon(Icons.check),

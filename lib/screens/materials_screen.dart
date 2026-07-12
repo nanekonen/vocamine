@@ -8,7 +8,17 @@ import 'package:image_picker/image_picker.dart';
 import '../models/material_item.dart';
 import '../models/folder.dart';
 import '../providers/material_library_provider.dart';
+import '../services/browser_context_menu_lease.dart';
 import '../services/vocamine_api_client.dart';
+import '../widgets/square_progress_indicator.dart';
+import '../widgets/academic_item_icon.dart';
+
+class _PendingMaterialImport {
+  final String title;
+  final String? folderId;
+
+  const _PendingMaterialImport({required this.title, required this.folderId});
+}
 
 class MaterialsScreen extends ConsumerStatefulWidget {
   final String? folderId;
@@ -23,13 +33,73 @@ class MaterialsScreen extends ConsumerStatefulWidget {
 class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
   final _api = VocamineApiClient();
   bool _isImporting = false;
+  final Map<int, _PendingMaterialImport> _pendingImports = {};
+  int _nextPendingImportId = 0;
+
+  int _showPendingImport(String title) {
+    final id = _nextPendingImportId++;
+    setState(() {
+      _pendingImports[id] = _PendingMaterialImport(
+        title: title,
+        folderId: widget.folderId,
+      );
+    });
+    return id;
+  }
+
+  void _hidePendingImport(int id) {
+    if (!mounted) return;
+    setState(() => _pendingImports.remove(id));
+  }
 
   @override
   void initState() {
     super.initState();
+    BrowserContextMenuLease.acquire();
     Future.microtask(() {
       ref.read(materialLibraryProvider.notifier).load();
     });
+  }
+
+  @override
+  void dispose() {
+    BrowserContextMenuLease.release();
+    super.dispose();
+  }
+
+  Future<void> _showBackgroundMenu(Offset position) async {
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'import',
+          child: ListTile(
+            leading: Icon(Icons.upload_file_outlined),
+            title: Text('教材を読み込む'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'create_folder',
+          child: ListTile(
+            leading: Icon(Icons.create_new_folder_outlined),
+            title: Text('フォルダを作成'),
+          ),
+        ),
+      ],
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'import':
+        await _showImportMenu(context, ref);
+      case 'create_folder':
+        _createFolder(context, ref);
+    }
   }
 
   String _mimeTypeForName(String filename) {
@@ -115,6 +185,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     final title = await _askMaterialTitle(image.name);
     if (title == null) return;
 
+    final pendingId = _showPendingImport(title);
     setState(() => _isImporting = true);
     try {
       final bytes = await image.readAsBytes();
@@ -123,7 +194,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
         filename: image.name,
       );
       if (!context.mounted) return;
-      final materialId = await ref
+      await ref
           .read(materialLibraryProvider.notifier)
           .addMaterial(
             title,
@@ -134,11 +205,6 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
             folderId: widget.folderId,
             analyzeImmediately: true,
           );
-      if (!context.mounted) return;
-      context.push(
-        '/materials/detail',
-        extra: {'materialId': materialId, 'title': title},
-      );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
@@ -146,6 +212,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       ).showSnackBar(SnackBar(content: Text('OCRに失敗しました: $error')));
     } finally {
       if (mounted) {
+        _hidePendingImport(pendingId);
         setState(() => _isImporting = false);
       }
     }
@@ -163,6 +230,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     final title = await _askMaterialTitle(file.name);
     if (title == null) return;
 
+    final pendingId = _showPendingImport(title);
     setState(() => _isImporting = true);
     try {
       final extraction = await _api.extractTextFromPdf(
@@ -170,7 +238,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
         filename: file.name,
       );
       if (!context.mounted) return;
-      final materialId = await ref
+      await ref
           .read(materialLibraryProvider.notifier)
           .addMaterial(
             title,
@@ -182,11 +250,6 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
             folderId: widget.folderId,
             analyzeImmediately: true,
           );
-      if (!context.mounted) return;
-      context.push(
-        '/materials/detail',
-        extra: {'materialId': materialId, 'title': title},
-      );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
@@ -194,6 +257,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       ).showSnackBar(SnackBar(content: Text('PDFの読み込みに失敗しました: $error')));
     } finally {
       if (mounted) {
+        _hidePendingImport(pendingId);
         setState(() => _isImporting = false);
       }
     }
@@ -628,8 +692,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       loading: () => '$date  解析中',
       error: (_, _) => '$date  解析エラー',
       data: (result) {
-        final percent = (result.coverageRate * 100).round();
-        return '$date  カバー率 $percent%  未知 ${result.unknownCount}';
+        return date;
       },
     );
   }
@@ -637,84 +700,161 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(materialLibraryProvider);
+    final horizontalPadding = MediaQuery.sizeOf(context).width >= 900
+        ? 40.0
+        : 16.0;
     final folders = library.folders
         .where((f) => f.parentId == widget.folderId)
         .toList();
     final materials = library.materials
         .where((m) => m.folderId == widget.folderId)
         .toList();
+    final pendingImports = _pendingImports.values
+        .where((pending) => pending.folderId == widget.folderId)
+        .toList();
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.create_new_folder),
-            tooltip: 'フォルダを作成',
+          TextButton.icon(
+            icon: const Icon(Icons.upload_file_outlined),
+            label: const Text('教材を読み込む'),
+            onPressed: _isImporting
+                ? null
+                : () => _showImportMenu(context, ref),
+          ),
+          TextButton.icon(
+            icon: const Icon(Icons.create_new_folder_outlined),
+            label: const Text('フォルダを作成'),
             onPressed: () => _createFolder(context, ref),
           ),
         ],
       ),
-      body: (folders.isEmpty && materials.isEmpty)
-          ? const Center(child: Text('教材がまだありません'))
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(24, 8, 24, 96),
-              children: [
-                _SectionHeader(
-                  icon: Icons.library_books_outlined,
-                  title: 'Materials Repository',
-                  subtitle: '読み込んだ教材',
-                ),
-                const SizedBox(height: 18),
-                Wrap(
-                  spacing: 14,
-                  runSpacing: 14,
+      body: ColoredBox(
+        color: const Color(0xFFF7F9FB),
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onSecondaryTapDown: (details) =>
+              _showBackgroundMenu(details.globalPosition),
+          child:
+              (folders.isEmpty && materials.isEmpty && pendingImports.isEmpty)
+              ? const Center(child: Text('教材がまだありません'))
+              : ListView(
+                  padding: EdgeInsets.fromLTRB(
+                    horizontalPadding,
+                    24,
+                    horizontalPadding,
+                    96,
+                  ),
                   children: [
-                    ...folders.map(
-                      (folder) => _LibraryTile(
-                        icon: Icons.folder_outlined,
-                        title: folder.name,
-                        subtitle: 'フォルダ',
-                        accentColor: const Color(0xFFC4934E),
-                        onTap: () => context.push(
-                          '/materials/folder',
-                          extra: {'folderId': folder.id, 'title': folder.name},
-                        ),
-                        onMenuSelected: (action) =>
-                            _handleFolderAction(action, folder),
-                      ),
+                    _SectionHeader(
+                      icon: Icons.library_books_outlined,
+                      title: 'Materials Repository',
+                      subtitle: '読み込んだ教材',
                     ),
-                    ...materials.map(
-                      (material) => _LibraryTile(
-                        icon: Icons.description_outlined,
-                        title: material.title,
-                        subtitle: _materialSubtitle(material, library),
-                        accentColor: Theme.of(context).colorScheme.primary,
-                        onTap: () => context.push(
-                          '/materials/detail',
-                          extra: {
-                            'materialId': material.id,
-                            'title': material.title,
-                          },
+                    const SizedBox(height: 32),
+                    Wrap(
+                      spacing: 24,
+                      runSpacing: 24,
+                      children: [
+                        ...folders.map(
+                          (folder) => GestureDetector(
+                            onSecondaryTapDown: (_) {},
+                            child: _LibraryTile(
+                              icon: Icons.folder_outlined,
+                              title: folder.name,
+                              subtitle: 'フォルダ',
+                              accentColor: const Color(0xFFC9A900),
+                              onTap: () => context.push(
+                                '/materials/folder',
+                                extra: {
+                                  'folderId': folder.id,
+                                  'title': folder.name,
+                                },
+                              ),
+                              onMenuSelected: (action) =>
+                                  _handleFolderAction(action, folder),
+                            ),
+                          ),
                         ),
-                        onMenuSelected: (action) =>
-                            _handleMaterialAction(action, material),
-                        showPageAction: true,
-                      ),
+                        ...pendingImports.map(
+                          (pending) => _LibraryTile(
+                            icon: Icons.hourglass_top,
+                            title: pending.title,
+                            subtitle: '教材読み込み中…',
+                            accentColor: Theme.of(
+                              context,
+                            ).colorScheme.secondary,
+                            onTap: () {},
+                            isLoading: true,
+                          ),
+                        ),
+                        ...materials.map(
+                          (material) => GestureDetector(
+                            onSecondaryTapDown: (_) {},
+                            child: _LibraryTile(
+                              icon:
+                                  library.movingMaterialIds.contains(
+                                    material.id,
+                                  )
+                                  ? Icons.drive_file_move_outline
+                                  : Icons.description_outlined,
+                              title: material.title,
+                              subtitle:
+                                  library.movingMaterialIds.contains(
+                                    material.id,
+                                  )
+                                  ? '移動中…'
+                                  : _materialSubtitle(material, library),
+                              accentColor:
+                                  library.analyses[material.id] is AsyncError
+                                  ? Theme.of(context).colorScheme.error
+                                  : Theme.of(context).colorScheme.secondary,
+                              onTap:
+                                  library.movingMaterialIds.contains(
+                                    material.id,
+                                  )
+                                  ? () {}
+                                  : () => context.push(
+                                      '/materials/detail',
+                                      extra: {
+                                        'materialId': material.id,
+                                        'title': material.title,
+                                      },
+                                    ),
+                              onMenuSelected:
+                                  library.movingMaterialIds.contains(
+                                    material.id,
+                                  )
+                                  ? null
+                                  : (action) =>
+                                        _handleMaterialAction(action, material),
+                              showPageAction: true,
+                              isLoading: library.movingMaterialIds.contains(
+                                material.id,
+                              ),
+                              coveragePercent:
+                                  library.analyses[material.id]?.value == null
+                                  ? null
+                                  : (library
+                                                .analyses[material.id]!
+                                                .value!
+                                                .coverageRate *
+                                            100)
+                                        .round(),
+                              unknownCount: library
+                                  .analyses[material.id]
+                                  ?.value
+                                  ?.unknownCount,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isImporting ? null : () => _showImportMenu(context, ref),
-        icon: _isImporting
-            ? const SizedBox.square(
-                dimension: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.photo_library),
-        label: Text(_isImporting ? '読み込み中' : '教材を読み込む'),
+        ),
       ),
     );
   }
@@ -735,7 +875,7 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: Theme.of(context).colorScheme.primary),
+        Icon(icon, color: Theme.of(context).colorScheme.secondary),
         const SizedBox(width: 10),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -763,6 +903,9 @@ class _LibraryTile extends StatelessWidget {
   final VoidCallback onTap;
   final ValueChanged<String>? onMenuSelected;
   final bool showPageAction;
+  final bool isLoading;
+  final int? coveragePercent;
+  final int? unknownCount;
 
   const _LibraryTile({
     required this.icon,
@@ -772,6 +915,9 @@ class _LibraryTile extends StatelessWidget {
     required this.onTap,
     this.onMenuSelected,
     this.showPageAction = false,
+    this.isLoading = false,
+    this.coveragePercent,
+    this.unknownCount,
   });
 
   @override
@@ -784,90 +930,154 @@ class _LibraryTile extends StatelessWidget {
         : width - 48;
     return SizedBox(
       width: tileWidth,
+      height: 210,
       child: Card(
+        color: Colors.white,
+        shadowColor: const Color(0x141A2B3C),
+        elevation: 1,
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.zero,
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: accentColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: accentColor.withValues(alpha: 0.26),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 52,
+                      height: 60,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF2F4F6),
+                        borderRadius: BorderRadius.zero,
+                        border: Border.all(color: const Color(0xFFDDE3EA)),
+                      ),
+                      child: isLoading
+                          ? Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: accentColor,
+                              ),
+                            )
+                          : AcademicItemIcon(
+                              kind: icon == Icons.folder_outlined
+                                  ? AcademicItemIconKind.folder
+                                  : AcademicItemIconKind.material,
+                              color: accentColor,
+                              size: 27,
+                            ),
                     ),
-                  ),
-                  child: Icon(icon, color: accentColor, size: 22),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            subtitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (onMenuSelected != null)
+                      PopupMenuButton<String>(
+                        color: Colors.white,
+                        iconColor: const Color(0xFF44474C),
+                        tooltip: '教材の操作',
+                        onSelected: onMenuSelected,
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: 'rename',
+                            child: ListTile(
+                              leading: Icon(Icons.edit_outlined),
+                              title: Text('名前の変更'),
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'move',
+                            child: ListTile(
+                              leading: Icon(Icons.drive_file_move_outline),
+                              title: Text('移動'),
+                            ),
+                          ),
+                          if (showPageAction)
+                            const PopupMenuItem(
+                              value: 'pages',
+                              child: ListTile(
+                                leading: Icon(Icons.note_add_outlined),
+                                title: Text('ページの追加'),
+                              ),
+                            ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: 'delete',
+                            child: ListTile(
+                              leading: Icon(Icons.delete_outline),
+                              title: Text('削除'),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                if (coveragePercent != null && unknownCount != null) ...[
+                  const Spacer(),
+                  const Divider(color: Color(0xFFDDE3EA)),
+                  const SizedBox(height: 12),
+                  Row(
                     children: [
-                      Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        subtitle,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                if (onMenuSelected != null)
-                  PopupMenuButton<String>(
-                    tooltip: '教材の操作',
-                    onSelected: onMenuSelected,
-                    itemBuilder: (context) => [
-                      const PopupMenuItem(
-                        value: 'rename',
-                        child: ListTile(
-                          leading: Icon(Icons.edit_outlined),
-                          title: Text('名前の変更'),
-                        ),
-                      ),
-                      const PopupMenuItem(
-                        value: 'move',
-                        child: ListTile(
-                          leading: Icon(Icons.drive_file_move_outline),
-                          title: Text('移動'),
-                        ),
-                      ),
-                      if (showPageAction)
-                        const PopupMenuItem(
-                          value: 'pages',
-                          child: ListTile(
-                            leading: Icon(Icons.note_add_outlined),
-                            title: Text('ページの追加'),
+                      SquareProgressIndicator(
+                        value: coveragePercent! / 100,
+                        size: 64,
+                        strokeWidth: 6,
+                        color: const Color(0xFF0060AC),
+                        backgroundColor: const Color(0xFFDDE3EA),
+                        child: Text(
+                          '$coveragePercent%',
+                          style: const TextStyle(
+                            color: Color(0xFF0060AC),
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      const PopupMenuDivider(),
-                      const PopupMenuItem(
-                        value: 'delete',
-                        child: ListTile(
-                          leading: Icon(Icons.delete_outline),
-                          title: Text('削除'),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Vocabulary Coverage: $coveragePercent%',
+                              style: const TextStyle(color: Color(0xFF041627)),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Unknown Words: $unknownCount',
+                              style: const TextStyle(color: Color(0xFF44474C)),
+                            ),
+                          ],
                         ),
                       ),
                     ],
-                  )
-                else
-                  const Icon(Icons.chevron_right, size: 20),
+                  ),
+                ],
               ],
             ),
           ),

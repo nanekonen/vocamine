@@ -72,6 +72,8 @@ class _AuthCallbackScreenState extends ConsumerState<AuthCallbackScreen> {
           .save(
             userId: session.userId,
             email: session.email,
+            username: session.username,
+            level: session.level,
             setupCompleted: session.setupCompleted,
           );
       if (!mounted) return;

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'screens/main_tab_screen.dart';
 import 'screens/materials_screen.dart';
 import 'screens/material_detail_screen.dart';
@@ -151,104 +152,186 @@ class _VocamineAppState extends ConsumerState<VocamineApp> {
     return MaterialApp.router(
       title: 'Vocamine',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3C6F64),
-          brightness: Brightness.light,
-          surface: const Color(0xFFFCFAF6),
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF041627),
+          onPrimary: Colors.white,
+          primaryContainer: Color(0xFF1A2B3C),
+          onPrimaryContainer: Color(0xFFD2E4FB),
+          secondary: Color(0xFF0060AC),
+          onSecondary: Colors.white,
+          secondaryContainer: Color(0xFF68ABFF),
+          onSecondaryContainer: Color(0xFF003E73),
+          tertiary: Color(0xFF705D00),
+          tertiaryContainer: Color(0xFFC9A900),
+          error: Color(0xFFBA1A1A),
+          surface: Color(0xFFF7F9FB),
+          onSurface: Color(0xFF191C1E),
+          onSurfaceVariant: Color(0xFF44474C),
+          outline: Color(0xFF74777D),
+          outlineVariant: Color(0xFFC4C6CD),
         ),
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFFCFAF6),
-        fontFamily: 'Roboto',
-        textTheme: ThemeData.light().textTheme.copyWith(
-          headlineSmall: const TextStyle(
-            fontFamily: 'Georgia',
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF232824),
-          ),
-          titleLarge: const TextStyle(
-            fontFamily: 'Georgia',
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF232824),
-          ),
-          titleMedium: const TextStyle(
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF232824),
-          ),
-          bodyMedium: const TextStyle(color: Color(0xFF353A36), height: 1.45),
-        ),
+        scaffoldBackgroundColor: const Color(0xFFF7F9FB),
+        fontFamily: GoogleFonts.inter().fontFamily,
+        visualDensity: VisualDensity.standard,
+        textTheme: GoogleFonts.interTextTheme(ThemeData.light().textTheme)
+            .copyWith(
+              displaySmall: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 40,
+                height: 1.2,
+                letterSpacing: -0.8,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF041627),
+              ),
+              headlineSmall: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 24,
+                height: 1.3,
+                letterSpacing: -0.3,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF041627),
+              ),
+              titleLarge: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF041627),
+              ),
+              titleMedium: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF191C1E),
+              ),
+              bodyLarge: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 16,
+                height: 1.5,
+                color: Color(0xFF191C1E),
+              ),
+              bodyMedium: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 14,
+                color: Color(0xFF44474C),
+                height: 1.45,
+              ),
+              labelLarge: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
         appBarTheme: const AppBarTheme(
           centerTitle: false,
           elevation: 0,
           scrolledUnderElevation: 0,
-          backgroundColor: Color(0xFFFCFAF6),
-          foregroundColor: Color(0xFF232824),
+          toolbarHeight: 72,
+          backgroundColor: Color(0xFFF7F9FB),
+          foregroundColor: Color(0xFF041627),
+          surfaceTintColor: Colors.transparent,
           titleTextStyle: TextStyle(
-            fontFamily: 'Georgia',
-            fontSize: 22,
+            fontFamily: 'Inter',
+            fontSize: 24,
             fontWeight: FontWeight.w700,
-            color: Color(0xFF232824),
+            letterSpacing: -0.3,
+            color: Color(0xFF041627),
           ),
         ),
         cardTheme: CardThemeData(
-          elevation: 0,
+          elevation: 1,
+          shadowColor: const Color(0x141A2B3C),
           color: Colors.white,
           margin: EdgeInsets.zero,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Color(0xFFE3DED3)),
+            borderRadius: BorderRadius.zero,
+            side: const BorderSide(color: Color(0xFFDDE3EA)),
           ),
         ),
         chipTheme: ChipThemeData(
-          backgroundColor: const Color(0xFFF2EFE8),
-          selectedColor: const Color(0xFFE0ECE8),
-          side: const BorderSide(color: Color(0xFFE3DED3)),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          backgroundColor: const Color(0xFFF2F4F6),
+          selectedColor: const Color(0xFFD4E3FF),
+          side: const BorderSide(color: Color(0xFFDDE3EA)),
+          shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
           labelStyle: const TextStyle(
-            color: Color(0xFF4A504B),
+            fontFamily: 'Inter',
+            fontSize: 12,
+            letterSpacing: 0.3,
+            color: Color(0xFF041627),
             fontWeight: FontWeight.w600,
           ),
         ),
         dividerTheme: const DividerThemeData(
-          color: Color(0xFFE3DED3),
+          color: Color(0xFFDDE3EA),
           thickness: 1,
           space: 1,
         ),
         floatingActionButtonTheme: const FloatingActionButtonThemeData(
-          backgroundColor: Color(0xFF4D756C),
+          backgroundColor: Color(0xFF0060AC),
           foregroundColor: Colors.white,
-          elevation: 1,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(8)),
-          ),
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.zero),
         ),
         filledButtonTheme: FilledButtonThemeData(
           style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF4D756C),
+            backgroundColor: const Color(0xFF041627),
             foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+            textStyle: const TextStyle(
+              fontFamily: 'Inter',
+              fontWeight: FontWeight.w600,
             ),
-            textStyle: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
           style: OutlinedButton.styleFrom(
-            foregroundColor: const Color(0xFF3C6F64),
-            side: const BorderSide(color: Color(0xFFB7C8C2)),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+            foregroundColor: const Color(0xFF0060AC),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+            side: const BorderSide(color: Color(0xFF0060AC)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+            textStyle: const TextStyle(
+              fontFamily: 'Inter',
+              fontWeight: FontWeight.w600,
             ),
-            textStyle: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),
-        listTileTheme: const ListTileThemeData(
-          iconColor: Color(0xFF5D645F),
-          titleTextStyle: TextStyle(
-            color: Color(0xFF232824),
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFFFFFFFF),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 16,
           ),
-          subtitleTextStyle: TextStyle(color: Color(0xFF6E756F)),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: const BorderSide(color: Color(0xFFC4C6CD)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: const BorderSide(color: Color(0xFFC4C6CD)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: const BorderSide(color: Color(0xFF0060AC), width: 2),
+          ),
+        ),
+        navigationBarTheme: const NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          indicatorColor: Color(0xFFFFE16D),
+          elevation: 0,
+          height: 72,
+        ),
+        listTileTheme: const ListTileThemeData(
+          iconColor: Color(0xFF44474C),
+          contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          titleTextStyle: TextStyle(
+            fontFamily: 'Inter',
+            color: Color(0xFF191C1E),
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+          subtitleTextStyle: TextStyle(color: Color(0xFF74777D)),
         ),
       ),
       routerConfig: router,

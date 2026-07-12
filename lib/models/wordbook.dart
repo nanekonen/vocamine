@@ -17,6 +17,22 @@ class Wordbook {
     this.sourceFolderId,
   });
 
+  Wordbook copyWith({
+    String? name,
+    String? folderId,
+    bool clearFolder = false,
+  }) {
+    return Wordbook(
+      id: id,
+      name: name ?? this.name,
+      folderId: clearFolder ? null : folderId ?? this.folderId,
+      isLearned: isLearned,
+      sourceType: sourceType,
+      sourceMaterialId: sourceMaterialId,
+      sourceFolderId: sourceFolderId,
+    );
+  }
+
   factory Wordbook.fromJson(Map<String, dynamic> json) {
     return Wordbook(
       id: json['id'] as String? ?? '',

@@ -12,22 +12,26 @@ class MaterialLibraryState {
   final List<AppFolder> folders;
   final List<MaterialItem> materials;
   final Map<String, AsyncValue<ExtractWordsResult>> analyses;
+  final Set<String> movingMaterialIds;
 
   const MaterialLibraryState({
     required this.folders,
     required this.materials,
     this.analyses = const {},
+    this.movingMaterialIds = const {},
   });
 
   MaterialLibraryState copyWith({
     List<AppFolder>? folders,
     List<MaterialItem>? materials,
     Map<String, AsyncValue<ExtractWordsResult>>? analyses,
+    Set<String>? movingMaterialIds,
   }) {
     return MaterialLibraryState(
       folders: folders ?? this.folders,
       materials: materials ?? this.materials,
       analyses: analyses ?? this.analyses,
+      movingMaterialIds: movingMaterialIds ?? this.movingMaterialIds,
     );
   }
 }
@@ -74,12 +78,8 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
           unawaited(analyzeMaterial(material.id));
         }
       }
-    } catch (error, stackTrace) {
+    } catch (_) {
       _loaded = false; // 念のため明示
-      // debugPrint('Failed to load material library: $error');
-      // FlutterError.reportError(
-      //   FlutterErrorDetails(exception: error, stack: stackTrace),
-      // );
     }
   }
 
@@ -237,13 +237,38 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
   }
 
   Future<void> moveMaterial(String materialId, String? folderId) async {
-    final updated = await _api.updateMaterial(
-      userId: ref.read(appSessionProvider).userId,
-      materialId: materialId,
-      folderId: folderId,
-      updateFolder: true,
+    final index = state.materials.indexWhere(
+      (material) => material.id == materialId,
     );
-    _replaceMaterial(updated);
+    if (index < 0) return;
+    final original = state.materials[index];
+    final optimistic = original.copyWith(
+      folderId: folderId,
+      clearFolder: folderId == null,
+    );
+    state = state.copyWith(
+      materials: [
+        for (final material in state.materials)
+          if (material.id == materialId) optimistic else material,
+      ],
+      movingMaterialIds: {...state.movingMaterialIds, materialId},
+    );
+    try {
+      final updated = await _api.updateMaterial(
+        userId: ref.read(appSessionProvider).userId,
+        materialId: materialId,
+        folderId: folderId,
+        updateFolder: true,
+      );
+      _replaceMaterial(updated);
+    } catch (_) {
+      _replaceMaterial(original);
+      rethrow;
+    } finally {
+      state = state.copyWith(
+        movingMaterialIds: {...state.movingMaterialIds}..remove(materialId),
+      );
+    }
   }
 
   Future<void> appendPages(

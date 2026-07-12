@@ -6,9 +6,11 @@ class WordExample {
 
 class Word {
   final String id;
+  final String studyKey;
   final String wordbookId;
   final String headword;
   final String meaningJa;
+  final bool hasJapaneseDefinition;
   final String partOfSpeech;
   final String? definitionEn;
   final String? ipa;
@@ -24,9 +26,11 @@ class Word {
 
   const Word({
     required this.id,
+    String? studyKey,
     required this.wordbookId,
     required this.headword,
     required this.meaningJa,
+    this.hasJapaneseDefinition = true,
     required this.partOfSpeech,
     this.definitionEn,
     this.ipa,
@@ -39,14 +43,16 @@ class Word {
     this.sourceLabels = const [],
     this.sourceTypes = const [],
     this.examples = const [],
-  });
+  }) : studyKey = studyKey ?? id;
 
-  Word copyWith({bool? isLearned}) {
+  Word copyWith({bool? isLearned, String? studyKey}) {
     return Word(
       id: id,
+      studyKey: studyKey ?? this.studyKey,
       wordbookId: wordbookId,
       headword: headword,
       meaningJa: meaningJa,
+      hasJapaneseDefinition: hasJapaneseDefinition,
       partOfSpeech: partOfSpeech,
       definitionEn: definitionEn,
       ipa: ipa,
@@ -111,6 +117,7 @@ class Word {
       meaningJa: definitionJa?.trim().isNotEmpty == true
           ? definitionJa!.trim()
           : '日本語訳が得られませんでした',
+      hasJapaneseDefinition: definitionJa?.trim().isNotEmpty == true,
       partOfSpeech: meaning['part_of_speech'] as String? ?? '',
       definitionEn: meaning['definition_en'] as String?,
       ipa: meaning['ipa'] as String?,

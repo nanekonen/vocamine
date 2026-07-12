@@ -352,6 +352,20 @@ class VocamineApiClient {
         .toList();
   }
 
+  Future<int> regenerateMissingJapanese(Iterable<int> meaningIds) async {
+    final response = await _client.post(
+      Uri.parse('$baseUrl/words/regenerate-missing-japanese'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'meaning_ids': meaningIds.toSet().toList()}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return (jsonDecode(response.body) as Map<String, dynamic>)['updated']
+            as int? ??
+        0;
+  }
+
   Future<({List<AppFolder> folders, List<Wordbook> wordbooks})>
   fetchIndependentWordbooks({required String userId}) async {
     final uri = Uri.parse(
@@ -536,17 +550,27 @@ class VocamineApiClient {
   Future<int> setupLevel({
     required String userId,
     required String level,
+    required String username,
   }) async {
     final response = await _client.post(
       Uri.parse('$baseUrl/users/$userId/setup'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'level': level}),
+      body: jsonEncode({'level': level, 'username': username}),
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(_extractErrorMessage(response));
     }
     final json = jsonDecode(response.body) as Map<String, dynamic>;
     return json['registered_words'] as int? ?? 0;
+  }
+
+  Future<String?> fetchUserLevel({required String userId}) async {
+    final response = await _client.get(Uri.parse('$baseUrl/users/$userId'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    return json['level'] as String?;
   }
 
   Future<AppSession> resolveAuthSession({required String accessToken}) async {
@@ -562,6 +586,8 @@ class VocamineApiClient {
     return AppSession(
       userId: json['user_id'] as String,
       email: json['email'] as String?,
+      username: json['username'] as String?,
+      level: json['level'] as String?,
       isLoaded: true,
       setupCompleted: json['setup_completed'] as bool? ?? false,
     );
