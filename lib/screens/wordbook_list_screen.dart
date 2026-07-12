@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../providers/material_library_provider.dart';
 import '../providers/wordbook_library_provider.dart';
+import '../models/wordbook.dart';
 import '../services/app_session.dart';
 
 class WordbookListScreen extends ConsumerStatefulWidget {
@@ -34,7 +34,196 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
   }
 
   void _load() {
-    ref.read(materialLibraryProvider.notifier).load();
+    ref.read(wordbookLibraryProvider.notifier).load();
+  }
+
+  Future<void> _createWordbook() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('単語帳を作成'),
+        content: TextField(controller: controller, autofocus: true),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('作成'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || !mounted) return;
+    await ref
+        .read(wordbookLibraryProvider.notifier)
+        .createWordbook(name, folderId: widget.folderId);
+  }
+
+  Future<void> _createFolder() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('フォルダを作成'),
+        content: TextField(controller: controller, autofocus: true),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('作成'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || !mounted) return;
+    await ref
+        .read(wordbookLibraryProvider.notifier)
+        .createFolder(name, parentId: widget.folderId);
+  }
+
+  Future<void> _rename(Wordbook book) async {
+    final controller = TextEditingController(text: book.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('名前の変更'),
+        content: TextField(controller: controller, autofocus: true),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('変更'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || name == book.name || !mounted) return;
+    final notifier = ref.read(wordbookLibraryProvider.notifier);
+    try {
+      if (book.sourceFolderId != null) {
+        await notifier.renameFolder(book.sourceFolderId!, name);
+      } else if (book.sourceMaterialId != null) {
+        await notifier.renameWordbook(book.id, name);
+      } else {
+        await notifier.renameWordbook(book.id, name);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('名前の変更に失敗しました: $error')));
+      }
+    }
+  }
+
+  Future<void> _move(Wordbook book) async {
+    final folders = ref.read(wordbookLibraryProvider).folders;
+    final destination = await showDialog<String?>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('移動先のフォルダ'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, '__root__'),
+            child: const ListTile(
+              leading: Icon(Icons.home_outlined),
+              title: Text('単語帳トップ'),
+            ),
+          ),
+          for (final folder in folders.where(
+            (folder) => folder.id != book.sourceFolderId,
+          ))
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, folder.id),
+              child: ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(folder.name),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (destination == null || !mounted) return;
+    final parentId = destination == '__root__' ? null : destination;
+    final notifier = ref.read(wordbookLibraryProvider.notifier);
+    try {
+      if (book.sourceFolderId != null) {
+        await notifier.moveFolder(book.sourceFolderId!, parentId);
+      } else if (book.sourceMaterialId != null) {
+        await notifier.moveWordbook(book.id, parentId);
+      } else {
+        await notifier.moveWordbook(book.id, parentId);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移動に失敗しました: $error')));
+      }
+    }
+  }
+
+  Future<void> _delete(Wordbook book) async {
+    final isFolder = book.sourceFolderId != null;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(isFolder ? 'フォルダを削除しますか？' : '単語帳を削除しますか？'),
+        content: Text(
+          isFolder ? '中の単語帳はトップへ移動します。' : '単語帳だけを削除します。教材と学習状態は削除されません。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final notifier = ref.read(wordbookLibraryProvider.notifier);
+    try {
+      if (book.sourceFolderId != null) {
+        await notifier.deleteFolder(book.sourceFolderId!);
+      } else if (book.sourceMaterialId != null) {
+        await notifier.deleteWordbook(book.id);
+      } else {
+        await notifier.deleteWordbook(book.id);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('削除に失敗しました: $error')));
+      }
+    }
+  }
+
+  void _handleAction(String action, Wordbook book) {
+    switch (action) {
+      case 'rename':
+        _rename(book);
+        return;
+      case 'move':
+        _move(book);
+        return;
+      case 'delete':
+        _delete(book);
+        return;
+    }
   }
 
   @override
@@ -45,14 +234,34 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
       }
     });
     final library = ref.watch(wordbookLibraryProvider);
-    final wordbooks = library.wordbooks
-        .where((book) => book.folderId == widget.folderId)
-        .toList();
+    final wordbooks = <Wordbook>[
+      ...library.folders
+          .where((folder) => folder.parentId == widget.folderId)
+          .map(
+            (folder) => Wordbook(
+              id: 'folder:${folder.id}',
+              name: folder.name,
+              folderId: folder.parentId,
+              sourceFolderId: folder.id,
+            ),
+          ),
+      ...library.wordbooks.where((book) => book.folderId == widget.folderId),
+    ];
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
+          IconButton(
+            tooltip: '単語帳を作成',
+            icon: const Icon(Icons.library_add_outlined),
+            onPressed: () => _createWordbook(),
+          ),
+          IconButton(
+            tooltip: 'フォルダを作成',
+            icon: const Icon(Icons.create_new_folder_outlined),
+            onPressed: () => _createFolder(),
+          ),
           IconButton(
             tooltip: '更新',
             icon: const Icon(Icons.refresh),
@@ -83,7 +292,7 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 24),
                 child: Text(
-                  _isRoot ? '教材別の単語帳はまだありません' : 'このフォルダには教材がありません',
+                  _isRoot ? '単語帳はまだありません' : 'このフォルダには教材がありません',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -98,9 +307,15 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
                     (book) => _WordbookTile(
                       icon: book.sourceFolderId != null
                           ? Icons.folder_outlined
+                          : book.sourceType == 'deleted_material'
+                          ? Icons.delete_outline
                           : Icons.menu_book_outlined,
                       title: book.name,
-                      subtitle: book.sourceFolderId != null ? '教材フォルダ' : '教材',
+                      subtitle: book.sourceFolderId != null
+                          ? '教材フォルダ'
+                          : book.sourceType == 'deleted_material'
+                          ? '削除後も単語を保持'
+                          : '教材',
                       accentColor: book.sourceFolderId != null
                           ? const Color(0xFFC4934E)
                           : Theme.of(context).colorScheme.primary,
@@ -120,6 +335,7 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
                           extra: {'wordbookId': book.id, 'title': book.name},
                         );
                       },
+                      onMenuSelected: (action) => _handleAction(action, book),
                     ),
                   ),
                 ],
@@ -137,6 +353,7 @@ class _WordbookTile extends StatelessWidget {
   final String subtitle;
   final Color accentColor;
   final VoidCallback onTap;
+  final ValueChanged<String>? onMenuSelected;
 
   const _WordbookTile({
     required this.icon,
@@ -144,6 +361,7 @@ class _WordbookTile extends StatelessWidget {
     required this.subtitle,
     required this.accentColor,
     required this.onTap,
+    this.onMenuSelected,
   });
 
   @override
@@ -197,7 +415,37 @@ class _WordbookTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                const Icon(Icons.chevron_right, size: 20),
+                if (onMenuSelected != null)
+                  PopupMenuButton<String>(
+                    tooltip: '単語帳の操作',
+                    onSelected: onMenuSelected,
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(
+                        value: 'rename',
+                        child: ListTile(
+                          leading: Icon(Icons.edit_outlined),
+                          title: Text('名前の変更'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'move',
+                        child: ListTile(
+                          leading: Icon(Icons.drive_file_move_outline),
+                          title: Text('移動'),
+                        ),
+                      ),
+                      PopupMenuDivider(),
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: ListTile(
+                          leading: Icon(Icons.delete_outline),
+                          title: Text('削除'),
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  const Icon(Icons.chevron_right, size: 20),
               ],
             ),
           ),

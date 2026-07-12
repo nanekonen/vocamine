@@ -16,4 +16,12 @@ class Wordbook {
     this.sourceMaterialId,
     this.sourceFolderId,
   });
+
+  factory Wordbook.fromJson(Map<String, dynamic> json) {
+    return Wordbook(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      folderId: json['folder_id'] as String?,
+    );
+  }
 }

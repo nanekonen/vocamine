@@ -5,6 +5,18 @@ class AppFolder {
 
   const AppFolder({required this.id, required this.name, this.parentId});
 
+  AppFolder copyWith({
+    String? name,
+    String? parentId,
+    bool clearParent = false,
+  }) {
+    return AppFolder(
+      id: id,
+      name: name ?? this.name,
+      parentId: clearParent ? null : parentId ?? this.parentId,
+    );
+  }
+
   factory AppFolder.fromJson(Map<String, dynamic> json) {
     return AppFolder(
       id: json['id'] as String? ?? '',

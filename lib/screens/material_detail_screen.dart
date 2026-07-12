@@ -9,61 +9,262 @@ import '../models/material_item.dart';
 import '../models/word_lookup.dart';
 import '../providers/material_library_provider.dart';
 import '../providers/words_provider.dart';
+import '../providers/wordbook_library_provider.dart';
 import '../services/app_session.dart';
 import '../services/vocamine_api_client.dart';
 import '../utils/part_of_speech_label.dart';
 
 enum _MaterialDisplayMode { original, text }
 
-enum _SidePanelMode { selection, unknown }
+enum _SidePanelMode { selection, unknown, known, all }
+
+final Map<String, String?> _materialDefaultWordbookCache = {};
+final Map<String, Set<int>> _registeredMeaningIdsByMaterial = {};
+final Map<String, Future<String?>> _materialDefaultWordbookLoads = {};
+
+Future<String?> _preloadMaterialDefaultWordbook(
+  MaterialItem material,
+  String userId,
+) {
+  if (material.defaultWordbookId != null) {
+    _materialDefaultWordbookCache[material.id] = material.defaultWordbookId;
+    return Future.value(material.defaultWordbookId);
+  }
+  return _materialDefaultWordbookLoads.putIfAbsent(material.id, () async {
+    try {
+      final value = await VocamineApiClient().getMaterialDefaultWordbook(
+        userId: userId,
+        materialId: material.id,
+      );
+      _materialDefaultWordbookCache[material.id] = value;
+      return value;
+    } catch (_) {
+      return null;
+    }
+  });
+}
 
 final _englishWordPattern = RegExp(r"[A-Za-z]+(?:['’-][A-Za-z]+)*");
+
+bool shouldTreatTextAsLexicalTarget(String text) {
+  return _englishWordPattern.hasMatch(text) &&
+      _englishWordPattern.firstMatch(text)?.group(0) == text;
+}
 
 bool canDisplayOriginalSource(MaterialItem material) {
   return material.sourceMimeType != null &&
       (material.sourceBytes != null || material.sourcePageImages.isNotEmpty);
 }
 
-class _WordLookupCache {
-  final _api = VocamineApiClient();
-  final Map<String, Future<WordLookupResult>> _futures = {};
-  final Map<String, WordLookupResult> _results = {};
-
-  String _keyFor(LexicalItemResult item) {
-    return '${item.text.toLowerCase().replaceAll('’', "'")}:${item.partOfSpeech}';
-  }
-
-  Future<WordLookupResult> lookup(
-    LexicalItemResult item, {
-    bool enrichMeanings = true,
-  }) {
-    final key = _keyFor(item);
-    final cached = _results[key];
-    if (cached != null) {
-      return SynchronousFuture(cached);
+Future<String?> _selectWordbookForMaterial(
+  BuildContext context,
+  MaterialItem material, {
+  bool forceSelection = false,
+  Rect? anchorRect,
+  Object? tapRegionGroupId,
+}) async {
+  final container = ProviderScope.containerOf(context, listen: false);
+  final userId = container.read(appSessionProvider).userId;
+  final api = VocamineApiClient();
+  if (!forceSelection) {
+    final saved = _materialDefaultWordbookCache.containsKey(material.id)
+        ? _materialDefaultWordbookCache[material.id]
+        : material.defaultWordbookId;
+    if (saved != null) {
+      return saved;
     }
-    return _futures.putIfAbsent(
-      key,
-      () => _api
-          .lookupWord(
-            word: item.text,
-            partOfSpeech: item.partOfSpeech,
-            enrichMeanings: enrichMeanings,
-          )
-          .then((result) {
-            _results[key] = result;
-            return result;
-          }),
+    final preloaded = await _preloadMaterialDefaultWordbook(material, userId);
+    if (preloaded != null) return preloaded;
+  }
+  if (!context.mounted) return null;
+  Widget actionDialog(BuildContext dialogContext) => AlertDialog(
+    title: const Text('単語帳への登録'),
+    content: const Text('この教材から単語を登録する単語帳を選んでください。'),
+    actions: [
+      OutlinedButton.icon(
+        onPressed: () => Navigator.pop(dialogContext, 'existing'),
+        icon: const Icon(Icons.menu_book_outlined),
+        label: const Text('既存の単語帳を選択'),
+      ),
+      FilledButton.icon(
+        onPressed: () => Navigator.pop(dialogContext, 'create'),
+        icon: const Icon(Icons.add),
+        label: const Text('新しい単語帳を作成'),
+      ),
+    ],
+  );
+  final action = anchorRect == null
+      ? await showDialog<String>(context: context, builder: actionDialog)
+      : await _showAnchoredPanel<String>(
+          context,
+          anchorRect: anchorRect,
+          builder: actionDialog,
+          tapRegionGroupId: tapRegionGroupId,
+        );
+  if (action == null || !context.mounted) return null;
+  String? wordbookId;
+  if (action == 'existing') {
+    await container.read(wordbookLibraryProvider.notifier).load();
+    final library = container.read(wordbookLibraryProvider);
+    if (!context.mounted) return null;
+    Widget existingDialog(BuildContext dialogContext) => SimpleDialog(
+      title: const Text('既存の単語帳を選択'),
+      children: [
+        if (library.wordbooks.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Text('単語帳がまだありません'),
+          ),
+        for (final book in library.wordbooks)
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, book.id),
+            child: ListTile(
+              leading: const Icon(Icons.menu_book_outlined),
+              title: Text(book.name),
+            ),
+          ),
+      ],
     );
+    wordbookId = anchorRect == null
+        ? await showDialog<String>(context: context, builder: existingDialog)
+        : await _showAnchoredPanel<String>(
+            context,
+            anchorRect: anchorRect,
+            builder: existingDialog,
+            tapRegionGroupId: tapRegionGroupId,
+          );
+    if (wordbookId == null || !context.mounted) return null;
+  } else {
+    final controller = TextEditingController(text: material.title);
+    controller.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: controller.text.length,
+    );
+    Widget createDialog(BuildContext dialogContext) => AlertDialog(
+      title: const Text('新しい単語帳'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: '単語帳名'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+          child: const Text('作成'),
+        ),
+      ],
+    );
+    final name = anchorRect == null
+        ? await showDialog<String>(context: context, builder: createDialog)
+        : await _showAnchoredPanel<String>(
+            context,
+            anchorRect: anchorRect,
+            builder: createDialog,
+            tapRegionGroupId: tapRegionGroupId,
+          );
+    controller.dispose();
+    if (name == null || name.isEmpty || !context.mounted) return null;
+    final book = await container
+        .read(wordbookLibraryProvider.notifier)
+        .createWordbook(name);
+    wordbookId = book.id;
+  }
+  await api.setMaterialDefaultWordbook(
+    userId: userId,
+    materialId: material.id,
+    wordbookId: wordbookId,
+  );
+  _materialDefaultWordbookCache[material.id] = wordbookId;
+  return wordbookId;
+}
+
+Future<T?> _showAnchoredPanel<T>(
+  BuildContext context, {
+  required Rect anchorRect,
+  required WidgetBuilder builder,
+  Object? tapRegionGroupId,
+}) {
+  return showGeneralDialog<T>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: '閉じる',
+    barrierColor: Colors.transparent,
+    transitionDuration: const Duration(milliseconds: 100),
+    pageBuilder: (dialogContext, _, _) {
+      final screen = MediaQuery.sizeOf(dialogContext);
+      const panelWidth = 340.0;
+      const gap = 12.0;
+      final hasRoomRight = anchorRect.right + gap + panelWidth <= screen.width;
+      final left = hasRoomRight
+          ? anchorRect.right + gap
+          : math.max(gap, anchorRect.left - gap - panelWidth);
+      final top = anchorRect.top
+          .clamp(gap, math.max(gap, screen.height - 480.0))
+          .toDouble();
+      return Stack(
+        children: [
+          Positioned(
+            left: left,
+            top: top,
+            width: panelWidth,
+            child: TapRegion(
+              groupId: tapRegionGroupId,
+              child: builder(dialogContext),
+            ),
+          ),
+        ],
+      );
+    },
+    transitionBuilder: (_, animation, _, child) => FadeTransition(
+      opacity: animation,
+      child: ScaleTransition(
+        scale: Tween(begin: 0.98, end: 1.0).animate(animation),
+        child: child,
+      ),
+    ),
+  );
+}
+
+class _WordLookupCache {
+  final Map<String, WordLookupResult> _results = {};
+  Future<void>? _loading;
+
+  String _normalizedWord(String value) =>
+      value.trim().toLowerCase().replaceAll('’', "'");
+
+  Future<void> loadStoredMeanings(Iterable<LexicalItemResult> items) {
+    return _loading ??= _loadStoredMeanings(items);
   }
 
-  void primeExistingMeanings(Iterable<LexicalItemResult> items) {
-    for (final item in items) {
-      if (item.text.isEmpty || item.partOfSpeech.isEmpty) {
-        continue;
-      }
-      lookup(item, enrichMeanings: false);
+  Future<void> _loadStoredMeanings(Iterable<LexicalItemResult> items) async {
+    final itemList = items.toList();
+    final results = await VocamineApiClient().fetchStoredMeanings(itemList);
+    for (final result in results) {
+      _results[_normalizedWord(result.word)] = result;
     }
+  }
+
+  Future<WordLookupResult> cachedLookup(LexicalItemResult item) {
+    final key = _normalizedWord(item.text);
+    final cached = _results[key];
+    if (cached != null) return SynchronousFuture(cached);
+    final loading = _loading;
+    if (loading != null) {
+      return loading.then(
+        (_) =>
+            _results[key] ??
+            WordLookupResult(id: 0, word: item.text, meanings: const []),
+      );
+    }
+    // 教材詳細を開く／操作するだけでは lookup API を呼ばない。
+    // 意味の生成は教材の新規読み込み・解析時だけ行う。
+    return SynchronousFuture(
+      WordLookupResult(id: 0, word: item.text, meanings: const []),
+    );
   }
 }
 
@@ -158,11 +359,58 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
   double _zoom = 1.0;
   final _lookupCache = _WordLookupCache();
   final Set<String> _autoAnalysisRequested = {};
+  bool _registeredMeaningsRequested = false;
+  bool _storedMeaningsRequested = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(() {
+      if (!mounted) return;
+      ref.read(wordbookLibraryProvider.notifier).load();
+    });
+  }
+
+  Future<void> _loadRegisteredMeanings(MaterialItem material) async {
+    if (_registeredMeaningsRequested) return;
+    _registeredMeaningsRequested = true;
+    final wordbookId = await _preloadMaterialDefaultWordbook(
+      material,
+      ref.read(appSessionProvider).userId,
+    );
+    if (wordbookId == null) {
+      _registeredMeaningIdsByMaterial[material.id] = {};
+      return;
+    }
+    try {
+      final words = await VocamineApiClient().fetchWordbook(
+        userId: ref.read(appSessionProvider).userId,
+        wordbookId: wordbookId,
+      );
+      _registeredMeaningIdsByMaterial[material.id] = words
+          .map((word) => word.meaningId)
+          .whereType<int>()
+          .toSet();
+      if (mounted) setState(() {});
+    } catch (_) {
+      _registeredMeaningsRequested = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(materialLibraryProvider);
     final material = library.materials.firstWhere(
       (m) => m.id == widget.materialId,
+    );
+    if (!_registeredMeaningsRequested) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadRegisteredMeanings(material);
+      });
+    }
+    _preloadMaterialDefaultWordbook(
+      material,
+      ref.read(appSessionProvider).userId,
     );
     final analysis = library.analyses[widget.materialId];
     if (analysis == null && _autoAnalysisRequested.add(widget.materialId)) {
@@ -174,7 +422,18 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
       });
     }
     analysis?.whenOrNull(
-      data: (result) => _lookupCache.primeExistingMeanings(result.items),
+      data: (result) {
+        if (_storedMeaningsRequested) return;
+        _storedMeaningsRequested = true;
+        _lookupCache
+            .loadStoredMeanings(result.items)
+            .then((_) {
+              if (mounted) setState(() {});
+            })
+            .catchError((_) {
+              _storedMeaningsRequested = false;
+            });
+      },
     );
     final hasSource = canDisplayOriginalSource(material);
     final effectiveMode = hasSource ? _displayMode : _MaterialDisplayMode.text;
@@ -198,10 +457,8 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
           children: [
             _AnalysisHeader(
               analysis: analysis,
-              onShowUnknown: () => setState(() {
-                _sidePanelMode = _sidePanelMode == _SidePanelMode.unknown
-                    ? null
-                    : _SidePanelMode.unknown;
+              onShowItems: (mode) => setState(() {
+                _sidePanelMode = _sidePanelMode == mode ? null : mode;
               }),
             ),
             const Divider(height: 1),
@@ -361,6 +618,7 @@ class _MaterialContentView extends ConsumerStatefulWidget {
 class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   final GlobalKey _textKey = GlobalKey();
   OverlayEntry? _popoverEntry;
+  final Object _popoverTapRegionGroup = Object();
   String? _hoveredRangeKey;
   int? _selectionStart;
   int? _selectionEnd;
@@ -370,10 +628,8 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   Offset? _lastPointerDownPosition;
   DateTime? _suppressSelectionUntil;
 
-  ExtractWordsResult? get _result => widget.analysis?.maybeWhen(
-    data: (value) => value,
-    orElse: () => null,
-  );
+  ExtractWordsResult? get _result =>
+      widget.analysis?.maybeWhen(data: (value) => value, orElse: () => null);
 
   _LearningTextState get _learningTextState => _LearningTextState(
     text: widget.material.ocrText,
@@ -403,6 +659,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
 
   void _showMeaningPopover(LexicalItemResult item, Offset globalPosition) {
     _hideMeaningPopover();
+    final hostContext = context;
     final overlay = Overlay.of(context);
     final screenSize = MediaQuery.sizeOf(context);
     const width = 340.0;
@@ -424,24 +681,30 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       builder: (context) {
         return Stack(
           children: [
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: _hideMeaningPopover,
-              ),
-            ),
             Positioned(
               left: left,
               top: top,
               width: width,
-              child: _MeaningPopover(
-                item: item,
-                future: widget.lookupCache.lookup(item),
-                userId: ref.read(appSessionProvider).userId,
-                material: widget.material,
-                onAdded: () =>
-                    ref.read(wordsProvider.notifier).load(isLearned: false),
-                onClose: _hideMeaningPopover,
+              child: TapRegion(
+                groupId: _popoverTapRegionGroup,
+                onTapOutside: (_) => _hideMeaningPopover(),
+                child: _MeaningPopover(
+                  item: item,
+                  future: widget.lookupCache.cachedLookup(item),
+                  hostContext: hostContext,
+                  anchorRect: Rect.fromLTWH(
+                    left.toDouble(),
+                    top.toDouble(),
+                    width,
+                    popoverMaxHeight,
+                  ),
+                  userId: ref.read(appSessionProvider).userId,
+                  material: widget.material,
+                  onAdded: () =>
+                      ref.read(wordsProvider.notifier).load(isLearned: false),
+                  tapRegionGroupId: _popoverTapRegionGroup,
+                  onClose: _hideMeaningPopover,
+                ),
               ),
             ),
           ],
@@ -591,11 +854,10 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       if (!rect.contains(position)) {
         continue;
       }
-      return _offsetWithinSourceRange(
-        rect,
-        position,
-        (start: resolved.textRange.start, end: resolved.textRange.end),
-      );
+      return _offsetWithinSourceRange(rect, position, (
+        start: resolved.textRange.start,
+        end: resolved.textRange.end,
+      ));
     }
     return null;
   }
@@ -652,9 +914,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   ) {
     final range = segment.range;
     final isWord = range?.kind == _MarkedRangeKind.word;
-    final rangeKey = isWord
-        ? _markedRangeKey(range!.start, range!.end)
-        : null;
+    final rangeKey = isWord ? _markedRangeKey(range!.start, range!.end) : null;
     final color = segment.visual.backgroundColor;
 
     return Positioned.fromRect(
@@ -704,12 +964,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         boxRange.end,
         hoveredRangeKey: _hoveredRangeKey,
       ))
-        _buildSourceSegment(
-          resolved.box,
-          pageSize,
-          boxRange,
-          segment,
-        ),
+        _buildSourceSegment(resolved.box, pageSize, boxRange, segment),
     ];
   }
 
@@ -729,7 +984,11 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       child: Stack(
         fit: StackFit.passthrough,
         children: [
-          Image.memory(imageBytes, width: double.infinity, fit: BoxFit.fitWidth),
+          Image.memory(
+            imageBytes,
+            width: double.infinity,
+            fit: BoxFit.fitWidth,
+          ),
           Positioned.fill(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -748,54 +1007,54 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
                     behavior: HitTestBehavior.translucent,
                     onTap: _clearSelection,
                     onPanStart: (details) {
-                    final anchor = _sourceOffsetAt(
-                      pageIndex,
-                      details.localPosition,
-                      pageSize,
-                      sourceBoxes,
-                    );
-                    if (anchor == null) {
-                      return;
-                    }
-                    setState(() {
-                      _dragPageIndex = pageIndex;
-                      _dragSelectionAnchor = anchor;
-                      _selectionStart = anchor;
-                      _selectionEnd = anchor;
-                    });
-                    widget.onSidePanelModeChanged(_SidePanelMode.selection);
-                  },
-                  onPanUpdate: (details) {
-                    final anchor = _dragSelectionAnchor;
-                    if (_dragPageIndex != pageIndex || anchor == null) {
-                      return;
-                    }
-                    final current = _sourceOffsetAt(
-                      pageIndex,
-                      details.localPosition,
-                      pageSize,
-                      sourceBoxes,
-                    );
-                    if (current == null) {
-                      return;
-                    }
-                    setState(() {
-                      _selectionStart = anchor;
-                      _selectionEnd = current;
-                    });
-                  },
-                  onPanEnd: (_) {
-                    setState(() {
-                      _dragPageIndex = null;
-                      _dragSelectionAnchor = null;
-                    });
-                  },
-                  onPanCancel: () {
-                    setState(() {
-                      _dragPageIndex = null;
-                      _dragSelectionAnchor = null;
-                    });
-                  },
+                      final anchor = _sourceOffsetAt(
+                        pageIndex,
+                        details.localPosition,
+                        pageSize,
+                        sourceBoxes,
+                      );
+                      if (anchor == null) {
+                        return;
+                      }
+                      setState(() {
+                        _dragPageIndex = pageIndex;
+                        _dragSelectionAnchor = anchor;
+                        _selectionStart = anchor;
+                        _selectionEnd = anchor;
+                      });
+                      widget.onSidePanelModeChanged(_SidePanelMode.selection);
+                    },
+                    onPanUpdate: (details) {
+                      final anchor = _dragSelectionAnchor;
+                      if (_dragPageIndex != pageIndex || anchor == null) {
+                        return;
+                      }
+                      final current = _sourceOffsetAt(
+                        pageIndex,
+                        details.localPosition,
+                        pageSize,
+                        sourceBoxes,
+                      );
+                      if (current == null) {
+                        return;
+                      }
+                      setState(() {
+                        _selectionStart = anchor;
+                        _selectionEnd = current;
+                      });
+                    },
+                    onPanEnd: (_) {
+                      setState(() {
+                        _dragPageIndex = null;
+                        _dragSelectionAnchor = null;
+                      });
+                    },
+                    onPanCancel: () {
+                      setState(() {
+                        _dragPageIndex = null;
+                        _dragSelectionAnchor = null;
+                      });
+                    },
                     child: Stack(
                       children: [
                         for (final resolved in pageBoxes)
@@ -846,12 +1105,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
                   ),
                 ],
               ),
-              child: _buildSourcePage(
-                pages[index],
-                index,
-                state,
-                sourceBoxes,
-              ),
+              child: _buildSourcePage(pages[index], index, state, sourceBoxes),
             );
           },
         ),
@@ -899,21 +1153,38 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   Widget build(BuildContext context) {
     final state = _learningTextState;
     final result = _result;
-    final panelItems = widget.sidePanelMode == _SidePanelMode.unknown
-        ? (result?.unknownItems ?? const <LexicalItemResult>[])
-        : state.selectedItems();
+    final panelItems = switch (widget.sidePanelMode) {
+      _SidePanelMode.unknown =>
+        result?.items.where((item) => !item.isLearned).toList() ?? const [],
+      _SidePanelMode.known =>
+        result?.items.where((item) => item.isLearned).toList() ?? const [],
+      _SidePanelMode.all => result?.items ?? const [],
+      _ => state.selectedItems(),
+    };
+    final panelTitle = switch (widget.sidePanelMode) {
+      _SidePanelMode.unknown => '未知語',
+      _SidePanelMode.known => '既知語',
+      _SidePanelMode.all => '全体',
+      _ => '選択範囲',
+    };
     final sidePanel = _SelectionMeaningPanel(
-      title: widget.sidePanelMode == _SidePanelMode.unknown ? '未知語' : '選択範囲',
+      title: panelTitle,
       items: panelItems,
       userId: ref.read(appSessionProvider).userId,
       material: widget.material,
-      onAdded: () => ref.read(wordsProvider.notifier).load(isLearned: false),
+      onAdded: () {
+        ref.read(wordsProvider.notifier).load(isLearned: false);
+        ref
+            .read(materialLibraryProvider.notifier)
+            .analyzeMaterial(widget.material.id, force: true);
+      },
       onShowDetails: _showMeaningPopover,
       lookupCache: widget.lookupCache,
     );
     final showSource =
         widget.mode == _MaterialDisplayMode.original &&
         canDisplayOriginalSource(widget.material);
+    final showSidePanel = widget.sidePanelMode != null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -931,7 +1202,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
               child: Column(
                 children: [
                   Expanded(child: content),
-                  if (panelItems.isNotEmpty) ...[
+                  if (showSidePanel) ...[
                     const SizedBox(height: 12),
                     SizedBox(height: 260, child: sidePanel),
                   ],
@@ -943,10 +1214,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               content,
-              if (panelItems.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                sidePanel,
-              ],
+              if (showSidePanel) ...[const SizedBox(height: 16), sidePanel],
             ],
           );
         }
@@ -955,8 +1223,10 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(child: content),
-            const SizedBox(width: 20),
-            SizedBox(width: 320, child: sidePanel),
+            if (showSidePanel) ...[
+              const SizedBox(width: 20),
+              SizedBox(width: 320, child: sidePanel),
+            ],
           ],
         );
         return showSource
@@ -970,9 +1240,10 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   }
 }
 
-
 String _sourceTypeForMaterial(MaterialItem material) {
-  return material.sourceMimeType == 'application/pdf' ? 'pdf_material' : 'image_material';
+  return material.sourceMimeType == 'application/pdf'
+      ? 'pdf_material'
+      : 'image_material';
 }
 
 LexicalItemResult _lexicalItemForWordInResult(
@@ -1038,7 +1309,8 @@ class _LearningTextState {
     final seen = <String>{};
     for (final range in ranges.where((range) => range.isSelected)) {
       final item = range.item;
-      final key = '${item.text}:${item.partOfSpeech}:${item.partOfSpeechDetail}';
+      final key =
+          '${item.text}:${item.partOfSpeech}:${item.partOfSpeechDetail}';
       if (seen.add(key)) {
         selected.add(item);
       }
@@ -1220,37 +1492,48 @@ List<_MarkedRange> _markedRangesForText({
     }
   }
 
-  // 英単語範囲は解析結果ではなく、表示している同一テキストの正規表現だけから作る。
-  // これにより a、texts、directions の末尾 s もテキスト表示と原文表示で一致する。
-  for (final match in _englishWordPattern.allMatches(text)) {
-    if (!_isLikelyEnglishFallbackWord(match)) {
-      continue;
+  // spaCyが英単語として解析した正確なoccurrenceだけをマーカーにする。
+  // ASCIIらしい文字列をUI側で推測しないため、日本語や記号のboxに誤った
+  // 英語の意味が紐づかない。複数形もoccurrence.endを使うため末尾sを含む。
+  for (final item in items.where((item) => item.kind == 'word')) {
+    for (final occurrence in item.occurrences) {
+      if (!_isValidTextRange(text, occurrence.start, occurrence.end)) {
+        continue;
+      }
+      final surface = text.substring(occurrence.start, occurrence.end);
+      if (!shouldTreatTextAsLexicalTarget(surface)) {
+        continue;
+      }
+      final normalizedSurface = _normalizeLookupWord(surface);
+      final normalizedForms = <String>{
+        _normalizeLookupWord(item.text),
+        ...item.surfaceForms.map(_normalizeLookupWord),
+      };
+      if (!normalizedForms.contains(normalizedSurface)) {
+        continue;
+      }
+      final overlapsSelectedPhrase = ranges.any(
+        (range) =>
+            range.kind == _MarkedRangeKind.phrase &&
+            occurrence.start >= range.start &&
+            occurrence.end <= range.end,
+      );
+      if (overlapsSelectedPhrase) {
+        continue;
+      }
+      ranges.add(
+        _MarkedRange(
+          start: occurrence.start,
+          end: occurrence.end,
+          item: item,
+          kind: _MarkedRangeKind.word,
+          isSelected:
+              hasSelection &&
+              occurrence.start >= start &&
+              occurrence.end <= end,
+        ),
+      );
     }
-    final word = text.substring(match.start, match.end);
-    final item = _lexicalItemForWordInResult(
-      word,
-      result,
-      start: match.start,
-      end: match.end,
-    );
-    final overlapsSelectedPhrase = ranges.any(
-      (range) =>
-          range.kind == _MarkedRangeKind.phrase &&
-          match.start >= range.start &&
-          match.end <= range.end,
-    );
-    if (overlapsSelectedPhrase) {
-      continue;
-    }
-    ranges.add(
-      _MarkedRange(
-        start: match.start,
-        end: match.end,
-        item: item,
-        kind: _MarkedRangeKind.word,
-        isSelected: hasSelection && match.start >= start && match.end <= end,
-      ),
-    );
   }
 
   ranges.sort((a, b) {
@@ -1338,10 +1621,7 @@ _TextRange? _validatedExplicitSourceRange(SourceWordBox box, String text) {
 }
 
 String _normalizeSourceText(String value) {
-  return value
-      .replaceAll('’', "'")
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
+  return value.replaceAll('’', "'").replaceAll(RegExp(r'\s+'), ' ').trim();
 }
 
 Rect _selectionRectWithinBox(
@@ -1369,9 +1649,9 @@ class _TextRange {
 
 class _AnalysisHeader extends StatelessWidget {
   final AsyncValue<ExtractWordsResult>? analysis;
-  final VoidCallback onShowUnknown;
+  final ValueChanged<_SidePanelMode> onShowItems;
 
-  const _AnalysisHeader({required this.analysis, required this.onShowUnknown});
+  const _AnalysisHeader({required this.analysis, required this.onShowItems});
 
   @override
   Widget build(BuildContext context) {
@@ -1450,13 +1730,22 @@ class _AnalysisHeader extends StatelessWidget {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            _MetricChip(
-                              icon: Icons.format_list_bulleted,
-                              label: '全体 ${result.totalWords}',
+                            ActionChip(
+                              onPressed: () => onShowItems(_SidePanelMode.all),
+                              avatar: const Icon(
+                                Icons.format_list_bulleted,
+                                size: 16,
+                              ),
+                              label: Text('全体 ${result.totalWords}'),
                             ),
-                            _MetricChip(
-                              icon: Icons.check_circle_outline,
-                              label: '既知 ${result.knownCount}',
+                            ActionChip(
+                              onPressed: () =>
+                                  onShowItems(_SidePanelMode.known),
+                              avatar: const Icon(
+                                Icons.check_circle_outline,
+                                size: 16,
+                              ),
+                              label: Text('既知 ${result.knownCount}'),
                             ),
                             ActionChip(
                               avatar: const Icon(
@@ -1464,7 +1753,8 @@ class _AnalysisHeader extends StatelessWidget {
                                 size: 16,
                               ),
                               label: Text('未知 ${result.unknownCount}'),
-                              onPressed: onShowUnknown,
+                              onPressed: () =>
+                                  onShowItems(_SidePanelMode.unknown),
                             ),
                           ],
                         ),
@@ -1477,22 +1767,6 @@ class _AnalysisHeader extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-class _MetricChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-
-  const _MetricChip({required this.icon, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Chip(
-      avatar: Icon(icon, size: 16),
-      label: Text(label),
-      visualDensity: VisualDensity.compact,
     );
   }
 }
@@ -1519,9 +1793,6 @@ class _SelectionMeaningPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (items.isEmpty) {
-      return const SizedBox.shrink();
-    }
     final visibleItems = items;
     final maxHeight = math.min(MediaQuery.sizeOf(context).height * 0.56, 440.0);
     return ConstrainedBox(
@@ -1555,21 +1826,23 @@ class _SelectionMeaningPanel extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Expanded(
-                child: ListView.builder(
-                  padding: EdgeInsets.zero,
-                  itemCount: visibleItems.length,
-                  itemBuilder: (context, index) {
-                    final item = visibleItems[index];
-                    return _SelectionMeaningTile(
-                      item: item,
-                      userId: userId,
-                      material: material,
-                      onAdded: onAdded,
-                      onShowDetails: onShowDetails,
-                      lookupCache: lookupCache,
-                    );
-                  },
-                ),
+                child: visibleItems.isEmpty
+                    ? const Center(child: Text('該当する単語はありません'))
+                    : ListView.builder(
+                        padding: EdgeInsets.zero,
+                        itemCount: visibleItems.length,
+                        itemBuilder: (context, index) {
+                          final item = visibleItems[index];
+                          return _SelectionMeaningTile(
+                            item: item,
+                            userId: userId,
+                            material: material,
+                            onAdded: onAdded,
+                            onShowDetails: onShowDetails,
+                            lookupCache: lookupCache,
+                          );
+                        },
+                      ),
               ),
             ],
           ),
@@ -1599,8 +1872,14 @@ class _BatchAddButton extends StatefulWidget {
 class _BatchAddButtonState extends State<_BatchAddButton> {
   bool _isAdding = false;
 
-  Future<void> _addAll() async {
+  Future<void> _addAll({bool forceWordbook = false}) async {
     if (_isAdding || widget.items.isEmpty) return;
+    final wordbookId = await _selectWordbookForMaterial(
+      context,
+      widget.material,
+      forceSelection: forceWordbook,
+    );
+    if (wordbookId == null) return;
     setState(() => _isAdding = true);
     try {
       await VocamineApiClient().addItemsToWordbook(
@@ -1610,6 +1889,7 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
         sourceMaterialId: widget.material.id,
         sourceFolderId: widget.material.folderId,
         sourceLabel: widget.material.title,
+        wordbookId: wordbookId,
       );
       if (!mounted) return;
       widget.onAdded();
@@ -1630,19 +1910,31 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
 
   @override
   Widget build(BuildContext context) {
-    return FilledButton.icon(
-      onPressed: _isAdding || widget.items.isEmpty ? null : _addAll,
-      style: FilledButton.styleFrom(
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      ),
-      icon: _isAdding
-          ? const SizedBox.square(
-              dimension: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : const Icon(Icons.playlist_add_check, size: 18),
-      label: const Text('一括登録'),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FilledButton.icon(
+          onPressed: _isAdding || widget.items.isEmpty ? null : () => _addAll(),
+          style: FilledButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          ),
+          icon: _isAdding
+              ? const SizedBox.square(
+                  dimension: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.playlist_add_check, size: 18),
+          label: const Text('一括登録'),
+        ),
+        PopupMenuButton<String>(
+          tooltip: '別の単語帳へ一括登録',
+          onSelected: (_) => _addAll(forceWordbook: true),
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'other', child: Text('別の単語帳に登録')),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -1708,17 +2000,23 @@ _MarkedRange? _rangeCoveringSegment(
 class _MeaningPopover extends StatefulWidget {
   final LexicalItemResult item;
   final Future<WordLookupResult> future;
+  final BuildContext hostContext;
+  final Rect anchorRect;
   final String userId;
   final MaterialItem material;
   final VoidCallback onAdded;
+  final Object tapRegionGroupId;
   final VoidCallback onClose;
 
   const _MeaningPopover({
     required this.item,
     required this.future,
+    required this.hostContext,
+    required this.anchorRect,
     required this.userId,
     required this.material,
     required this.onAdded,
+    required this.tapRegionGroupId,
     required this.onClose,
   });
 
@@ -1731,32 +2029,64 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
   final Set<int> _adding = {};
   final Set<int> _added = {};
 
-  Future<void> _addMeaning(int meaningId) async {
+  Future<void> _addMeaning(int meaningId, {bool forceWordbook = false}) async {
+    final hostContext = widget.hostContext;
+    final material = widget.material;
+    final userId = widget.userId;
+    final onAdded = widget.onAdded;
+    if (!hostContext.mounted) return;
+    if (_adding.contains(meaningId) || _added.contains(meaningId)) return;
     setState(() => _adding.add(meaningId));
+    String? wordbookId;
+    try {
+      wordbookId = await _selectWordbookForMaterial(
+        hostContext,
+        material,
+        forceSelection: forceWordbook,
+        anchorRect: widget.anchorRect,
+        tapRegionGroupId: widget.tapRegionGroupId,
+      );
+    } catch (error) {
+      if (mounted) setState(() => _adding.remove(meaningId));
+      if (hostContext.mounted) {
+        ScaffoldMessenger.of(
+          hostContext,
+        ).showSnackBar(SnackBar(content: Text('登録先の取得に失敗しました: $error')));
+      }
+      return;
+    }
+    if (wordbookId == null) {
+      if (mounted) setState(() => _adding.remove(meaningId));
+      widget.onClose();
+      return;
+    }
+    if (mounted) setState(() => _added.add(meaningId));
     try {
       await _api.addMeaningToWordbook(
-        userId: widget.userId,
+        userId: userId,
         meaningId: meaningId,
-        sourceType: _sourceTypeForMaterial(widget.material),
-        sourceMaterialId: widget.material.id,
-        sourceFolderId: widget.material.folderId,
-        sourceLabel: widget.material.title,
+        sourceType: _sourceTypeForMaterial(material),
+        sourceMaterialId: material.id,
+        sourceFolderId: material.folderId,
+        sourceLabel: material.title,
+        wordbookId: wordbookId,
       );
-      if (!mounted) return;
-      setState(() => _added.add(meaningId));
-      widget.onAdded();
+      _registeredMeaningIdsByMaterial
+          .putIfAbsent(material.id, () => <int>{})
+          .add(meaningId);
+      onAdded();
+      if (!hostContext.mounted) return;
       ScaffoldMessenger.of(
-        context,
+        hostContext,
       ).showSnackBar(const SnackBar(content: Text('単語帳に追加しました')));
     } catch (error) {
-      if (!mounted) return;
+      if (mounted) setState(() => _added.remove(meaningId));
+      if (!hostContext.mounted) return;
       ScaffoldMessenger.of(
-        context,
+        hostContext,
       ).showSnackBar(SnackBar(content: Text('追加に失敗しました: $error')));
     } finally {
-      if (mounted) {
-        setState(() => _adding.remove(meaningId));
-      }
+      if (mounted) setState(() => _adding.remove(meaningId));
     }
   }
 
@@ -1810,7 +2140,14 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
                 ),
                 const SizedBox(height: 10),
                 if (snapshot.connectionState != ConnectionState.done)
-                  const LinearProgressIndicator(minHeight: 2)
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('意味を取得中…'),
+                      SizedBox(height: 6),
+                      LinearProgressIndicator(minHeight: 2),
+                    ],
+                  )
                 else if (meanings.isEmpty)
                   const Text('意味がまだ見つかりませんでした')
                 else
@@ -1825,8 +2162,16 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
                                   meaning.partOfSpeech ==
                                   widget.item.partOfSpeech,
                               isAdding: _adding.contains(meaning.id),
-                              isAdded: _added.contains(meaning.id),
+                              isAdded:
+                                  _added.contains(meaning.id) ||
+                                  (_registeredMeaningIdsByMaterial[widget
+                                              .material
+                                              .id]
+                                          ?.contains(meaning.id) ??
+                                      false),
                               onAdd: () => _addMeaning(meaning.id),
+                              onAddElsewhere: () =>
+                                  _addMeaning(meaning.id, forceWordbook: true),
                             ),
                         ],
                       ),
@@ -1864,6 +2209,7 @@ class _PopoverMeaningCard extends StatelessWidget {
   final bool isAdding;
   final bool isAdded;
   final VoidCallback onAdd;
+  final VoidCallback onAddElsewhere;
 
   const _PopoverMeaningCard({
     required this.meaning,
@@ -1871,6 +2217,7 @@ class _PopoverMeaningCard extends StatelessWidget {
     required this.isAdding,
     required this.isAdded,
     required this.onAdd,
+    required this.onAddElsewhere,
   });
 
   @override
@@ -1949,25 +2296,37 @@ class _PopoverMeaningCard extends StatelessWidget {
             _ExampleView(example: example),
           ],
           const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerRight,
-            child: FilledButton.icon(
-              onPressed: isAdding || isAdded ? null : onAdd,
-              style: FilledButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              FilledButton.icon(
+                onPressed: isAdding || isAdded ? null : onAdd,
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
                 ),
+                icon: isAdding
+                    ? const SizedBox.square(
+                        dimension: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        isAdded ? Icons.check : Icons.playlist_add,
+                        size: 18,
+                      ),
+                label: Text(isAdded ? '追加済み' : '単語帳に追加'),
               ),
-              icon: isAdding
-                  ? const SizedBox.square(
-                      dimension: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(isAdded ? Icons.check : Icons.playlist_add, size: 18),
-              label: Text(isAdded ? '追加済み' : '単語帳に追加'),
-            ),
+              PopupMenuButton<String>(
+                tooltip: '別の単語帳へ登録',
+                onSelected: (_) => onAddElsewhere(),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'other', child: Text('別の単語帳に登録')),
+                ],
+              ),
+            ],
           ),
         ],
       ),
@@ -2033,11 +2392,14 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
   final Set<int> _adding = {};
   final Set<int> _added = {};
   late Future<WordLookupResult> _future;
+  bool _isMarkingKnown = false;
+  bool _isKnown = false;
 
   @override
   void initState() {
     super.initState();
     _future = _createFuture();
+    _isKnown = widget.item.isLearned;
   }
 
   @override
@@ -2046,14 +2408,21 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
     if (oldWidget.item.text != widget.item.text ||
         oldWidget.item.partOfSpeech != widget.item.partOfSpeech) {
       _future = _createFuture();
+      _isKnown = widget.item.isLearned;
     }
   }
 
   Future<WordLookupResult> _createFuture() {
-    return widget.lookupCache.lookup(widget.item);
+    return widget.lookupCache.cachedLookup(widget.item);
   }
 
-  Future<void> _addMeaning(int meaningId) async {
+  Future<void> _addMeaning(int meaningId, {bool forceWordbook = false}) async {
+    final wordbookId = await _selectWordbookForMaterial(
+      context,
+      widget.material,
+      forceSelection: forceWordbook,
+    );
+    if (wordbookId == null) return;
     setState(() => _adding.add(meaningId));
     try {
       await VocamineApiClient().addMeaningToWordbook(
@@ -2063,7 +2432,11 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
         sourceMaterialId: widget.material.id,
         sourceFolderId: widget.material.folderId,
         sourceLabel: widget.material.title,
+        wordbookId: wordbookId,
       );
+      _registeredMeaningIdsByMaterial
+          .putIfAbsent(widget.material.id, () => <int>{})
+          .add(meaningId);
       if (!mounted) return;
       setState(() => _added.add(meaningId));
       widget.onAdded();
@@ -2082,6 +2455,35 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
     }
   }
 
+  Future<void> _markKnown() async {
+    if (_isMarkingKnown || _isKnown) return;
+    setState(() => _isMarkingKnown = true);
+    try {
+      await VocamineApiClient().addItemsToWordbook(
+        userId: widget.userId,
+        items: [widget.item],
+        isLearned: true,
+        sourceType: _sourceTypeForMaterial(widget.material),
+        sourceMaterialId: widget.material.id,
+        sourceFolderId: widget.material.folderId,
+        sourceLabel: widget.material.title,
+      );
+      if (!mounted) return;
+      setState(() => _isKnown = true);
+      widget.onAdded();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('学習済み単語に追加しました')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('学習済みへの追加に失敗しました: $error')));
+    } finally {
+      if (mounted) setState(() => _isMarkingKnown = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<WordLookupResult>(
@@ -2089,10 +2491,16 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
       builder: (context, snapshot) {
         final meaning = _firstMeaning(snapshot.data?.meanings ?? const []);
         final isAdding = meaning != null && _adding.contains(meaning.id);
-        final isAdded = meaning != null && _added.contains(meaning.id);
-        return InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTapDown: (details) =>
+        final isAdded =
+            meaning != null &&
+            (_added.contains(meaning.id) ||
+                (_registeredMeaningIdsByMaterial[widget.material.id]?.contains(
+                      meaning.id,
+                    ) ??
+                    false));
+        return GestureDetector(
+          behavior: HitTestBehavior.deferToChild,
+          onTapUp: (details) =>
               widget.onShowDetails(widget.item, details.globalPosition),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
@@ -2119,7 +2527,14 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
                 ),
                 const SizedBox(height: 4),
                 if (snapshot.connectionState != ConnectionState.done)
-                  const LinearProgressIndicator(minHeight: 2)
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('意味を取得中…'),
+                      SizedBox(height: 6),
+                      LinearProgressIndicator(minHeight: 2),
+                    ],
+                  )
                 else
                   Text(
                     meaning?.definitionJa?.trim().isNotEmpty == true
@@ -2128,23 +2543,54 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 const SizedBox(height: 6),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: FilledButton.icon(
-                    onPressed: meaning == null || isAdding || isAdded
-                        ? null
-                        : () => _addMeaning(meaning.id),
-                    icon: isAdding
-                        ? const SizedBox.square(
-                            dimension: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Icon(
-                            isAdded ? Icons.check : Icons.playlist_add,
-                            size: 18,
-                          ),
-                    label: Text(isAdded ? '追加済み' : '単語帳に追加'),
-                  ),
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (!_isKnown)
+                      OutlinedButton.icon(
+                        onPressed: _isMarkingKnown ? null : _markKnown,
+                        icon: _isMarkingKnown
+                            ? const SizedBox.square(
+                                dimension: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.check, size: 18),
+                        label: const Text('知っている'),
+                      ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton.icon(
+                        onPressed: meaning == null || isAdding || isAdded
+                            ? null
+                            : () => _addMeaning(meaning.id),
+                        icon: isAdding
+                            ? const SizedBox.square(
+                                dimension: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Icon(
+                                isAdded ? Icons.check : Icons.playlist_add,
+                                size: 18,
+                              ),
+                        label: Text(isAdded ? '追加済み' : '単語帳に追加'),
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: '別の単語帳へ登録',
+                      onSelected: meaning == null
+                          ? null
+                          : (_) => _addMeaning(meaning.id, forceWordbook: true),
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'other', child: Text('別の単語帳に登録')),
+                      ],
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -2231,7 +2677,16 @@ class _MeaningSheetState extends State<_MeaningSheet> {
           future: widget.future,
           builder: (context, snapshot) {
             if (snapshot.connectionState != ConnectionState.done) {
-              return const Center(child: CircularProgressIndicator());
+              return const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 12),
+                    Text('意味を取得中…'),
+                  ],
+                ),
+              );
             }
             if (snapshot.hasError) {
               return Padding(

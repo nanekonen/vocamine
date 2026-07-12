@@ -9,6 +9,7 @@ import '../models/folder.dart';
 import '../models/material_item.dart';
 import '../models/word.dart';
 import '../models/word_lookup.dart';
+import '../models/wordbook.dart';
 import 'app_session.dart';
 
 class PdfExtractionResult {
@@ -171,6 +172,44 @@ class VocamineApiClient {
     );
   }
 
+  Future<List<WordLookupResult>> fetchStoredMeanings(
+    List<LexicalItemResult> items,
+  ) async {
+    final response = await _client.post(
+      Uri.parse('$baseUrl/words/stored-meanings'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'items': items
+            .map(
+              (item) => {
+                'text': item.text,
+                'part_of_speech': item.partOfSpeech,
+                'part_of_speech_detail': item.partOfSpeechDetail,
+                'surface_forms': item.surfaceForms,
+                'occurrences': item.occurrences
+                    .map(
+                      (occurrence) => {
+                        'form': occurrence.form,
+                        'start': occurrence.start,
+                        'end': occurrence.end,
+                      },
+                    )
+                    .toList(),
+                'kind': item.kind,
+              },
+            )
+            .toList(),
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return (jsonDecode(response.body) as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .map(WordLookupResult.fromJson)
+        .toList();
+  }
+
   Future<void> addMeaningToWordbook({
     required String userId,
     required int meaningId,
@@ -178,6 +217,7 @@ class VocamineApiClient {
     String? sourceMaterialId,
     String? sourceFolderId,
     String? sourceLabel,
+    String? wordbookId,
   }) async {
     final uri = Uri.parse(
       '$baseUrl/words/wordbook',
@@ -191,6 +231,7 @@ class VocamineApiClient {
         'source_material_id': sourceMaterialId,
         'source_folder_id': sourceFolderId,
         'source_label': sourceLabel,
+        'wordbook_id': wordbookId,
       }),
     );
     if (response.statusCode == 409) {
@@ -209,6 +250,8 @@ class VocamineApiClient {
     String? sourceMaterialId,
     String? sourceFolderId,
     String? sourceLabel,
+    bool isLearned = false,
+    String? wordbookId,
   }) async {
     final payloadItems = items
         .map(
@@ -241,6 +284,8 @@ class VocamineApiClient {
         'source_material_id': sourceMaterialId,
         'source_folder_id': sourceFolderId,
         'source_label': sourceLabel,
+        'is_learned': isLearned,
+        'wordbook_id': wordbookId,
       }),
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -254,6 +299,7 @@ class VocamineApiClient {
     String? sourceType,
     String? sourceMaterialId,
     String? sourceFolderId,
+    String? wordbookId,
   }) async {
     final queryParameters = <String, String>{};
     if (isLearned != null) {
@@ -266,6 +312,7 @@ class VocamineApiClient {
     if (sourceFolderId != null) {
       queryParameters['source_folder_id'] = sourceFolderId;
     }
+    if (wordbookId != null) queryParameters['wordbook_id'] = wordbookId;
     final uri = Uri.parse('$baseUrl/words/wordbook/$userId').replace(
       queryParameters: queryParameters.isEmpty ? null : queryParameters,
     );
@@ -280,6 +327,196 @@ class VocamineApiClient {
         .map(Word.fromWordbookJson)
         .where((word) => word.headword.isNotEmpty)
         .toList();
+  }
+
+  Future<List<Word>> fetchDistractors({
+    required String partOfSpeech,
+    required Iterable<int> excludeMeaningIds,
+    int limit = 20,
+  }) async {
+    final uri = Uri.parse('$baseUrl/words/distractors').replace(
+      queryParameters: {
+        'part_of_speech': partOfSpeech,
+        'exclude_meaning_ids': excludeMeaningIds.join(','),
+        'limit': limit.toString(),
+      },
+    );
+    final response = await _client.get(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return (jsonDecode(response.body) as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .map(Word.fromMeaningJson)
+        .where((word) => word.headword.isNotEmpty)
+        .toList();
+  }
+
+  Future<({List<AppFolder> folders, List<Wordbook> wordbooks})>
+  fetchIndependentWordbooks({required String userId}) async {
+    final uri = Uri.parse(
+      '$baseUrl/wordbooks',
+    ).replace(queryParameters: {'user_id': userId});
+    final response = await _client.get(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    return (
+      folders: (json['folders'] as List<dynamic>? ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(AppFolder.fromJson)
+          .toList(),
+      wordbooks: (json['wordbooks'] as List<dynamic>? ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(Wordbook.fromJson)
+          .toList(),
+    );
+  }
+
+  Future<Wordbook> createIndependentWordbook({
+    required String userId,
+    required String name,
+    String? folderId,
+  }) async {
+    final response = await _client.post(
+      Uri.parse('$baseUrl/wordbooks'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'name': name,
+        'folder_id': folderId,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return Wordbook.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<void> updateIndependentWordbook({
+    required String userId,
+    required String wordbookId,
+    String? name,
+    String? folderId,
+    bool updateFolder = false,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/wordbooks/$wordbookId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'name': name,
+        'folder_id': folderId,
+        'update_folder': updateFolder,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+  }
+
+  Future<void> deleteIndependentWordbook({
+    required String userId,
+    required String wordbookId,
+  }) async {
+    final response = await _client.delete(
+      Uri.parse(
+        '$baseUrl/wordbooks/$wordbookId',
+      ).replace(queryParameters: {'user_id': userId}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+  }
+
+  Future<AppFolder> createIndependentWordbookFolder({
+    required String userId,
+    required String name,
+    String? parentId,
+  }) async {
+    final response = await _client.post(
+      Uri.parse('$baseUrl/wordbooks/folders'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'name': name,
+        'parent_id': parentId,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return AppFolder.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> updateIndependentWordbookFolder({
+    required String userId,
+    required String folderId,
+    String? name,
+    String? parentId,
+    bool updateParent = false,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/wordbooks/folders/$folderId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'name': name,
+        'parent_id': parentId,
+        'update_parent': updateParent,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+  }
+
+  Future<void> deleteIndependentWordbookFolder({
+    required String userId,
+    required String folderId,
+  }) async {
+    final response = await _client.delete(
+      Uri.parse(
+        '$baseUrl/wordbooks/folders/$folderId',
+      ).replace(queryParameters: {'user_id': userId}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+  }
+
+  Future<String?> getMaterialDefaultWordbook({
+    required String userId,
+    required String materialId,
+  }) async {
+    final response = await _client.get(
+      Uri.parse(
+        '$baseUrl/wordbooks/materials/$materialId/default',
+      ).replace(queryParameters: {'user_id': userId}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return (jsonDecode(response.body) as Map<String, dynamic>)['wordbook_id']
+        as String?;
+  }
+
+  Future<void> setMaterialDefaultWordbook({
+    required String userId,
+    required String materialId,
+    required String wordbookId,
+  }) async {
+    final response = await _client.put(
+      Uri.parse('$baseUrl/wordbooks/materials/$materialId/default'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'user_id': userId, 'wordbook_id': wordbookId}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
   }
 
   Future<void> updateWordbookEntry({
@@ -351,6 +588,69 @@ class VocamineApiClient {
     return (folders: folders, materials: materials);
   }
 
+  Future<void> deleteMaterial({
+    required String userId,
+    required String materialId,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/materials/$materialId',
+    ).replace(queryParameters: {'user_id': userId});
+    final response = await _client.delete(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+  }
+
+  Future<MaterialItem> updateMaterial({
+    required String userId,
+    required String materialId,
+    String? title,
+    String? folderId,
+    bool updateFolder = false,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/materials/$materialId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'title': title,
+        'folder_id': folderId,
+        'update_folder': updateFolder,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return MaterialItem.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<MaterialItem> appendMaterialPages({
+    required String userId,
+    required String materialId,
+    required String extractedText,
+    required List<Uint8List> pageImages,
+    required List<SourceWordBox> wordBoxes,
+  }) async {
+    final response = await _client.post(
+      Uri.parse('$baseUrl/materials/$materialId/pages'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'extracted_text': extractedText,
+        'page_images_base64': pageImages.map(base64Encode).toList(),
+        'word_boxes': wordBoxes.map((box) => box.toJson()).toList(),
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return MaterialItem.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   Future<AppFolder> createMaterialFolder({
     required String userId,
     required String name,
@@ -368,7 +668,47 @@ class VocamineApiClient {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(_extractErrorMessage(response));
     }
-    return AppFolder.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return AppFolder.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<AppFolder> updateMaterialFolder({
+    required String userId,
+    required String folderId,
+    String? name,
+    String? parentId,
+    bool updateParent = false,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/materials/folders/$folderId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'name': name,
+        'parent_id': parentId,
+        'update_parent': updateParent,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return AppFolder.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> deleteMaterialFolder({
+    required String userId,
+    required String folderId,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/materials/folders/$folderId',
+    ).replace(queryParameters: {'user_id': userId});
+    final response = await _client.delete(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
   }
 
   Future<MaterialItem> createMaterial({
@@ -416,6 +756,7 @@ class VocamineApiClient {
           ? saved.sourceWordBoxes
           : sourceWordBoxes,
       folderId: saved.folderId,
+      defaultWordbookId: saved.defaultWordbookId,
       sourceObjectStorageKey: saved.sourceObjectStorageKey,
       readablePdfObjectStorageKey: saved.readablePdfObjectStorageKey,
       thumbnailObjectStorageKey: saved.thumbnailObjectStorageKey,

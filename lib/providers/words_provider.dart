@@ -10,6 +10,7 @@ class WordsNotifier extends Notifier<AsyncValue<List<Word>>> {
   String? _lastSourceType;
   String? _lastSourceMaterialId;
   String? _lastSourceFolderId;
+  String? _lastWordbookId;
   String? _loadedUserId;
 
   @override
@@ -20,6 +21,7 @@ class WordsNotifier extends Notifier<AsyncValue<List<Word>>> {
       _lastSourceType = null;
       _lastSourceMaterialId = null;
       _lastSourceFolderId = null;
+      _lastWordbookId = null;
       _loadedUserId = null;
     }
     return const AsyncValue.data([]);
@@ -30,11 +32,13 @@ class WordsNotifier extends Notifier<AsyncValue<List<Word>>> {
     String? sourceType,
     String? sourceMaterialId,
     String? sourceFolderId,
+    String? wordbookId,
   }) async {
     _lastIsLearned = isLearned;
     _lastSourceType = sourceType;
     _lastSourceMaterialId = sourceMaterialId;
     _lastSourceFolderId = sourceFolderId;
+    _lastWordbookId = wordbookId;
     state = const AsyncValue.loading();
     try {
       final userId = ref.read(appSessionProvider).userId;
@@ -44,6 +48,7 @@ class WordsNotifier extends Notifier<AsyncValue<List<Word>>> {
         sourceType: sourceType,
         sourceMaterialId: sourceMaterialId,
         sourceFolderId: sourceFolderId,
+        wordbookId: wordbookId,
       );
       _loadedUserId = userId;
       state = AsyncValue.data(words);
@@ -58,6 +63,7 @@ class WordsNotifier extends Notifier<AsyncValue<List<Word>>> {
       sourceType: _lastSourceType,
       sourceMaterialId: _lastSourceMaterialId,
       sourceFolderId: _lastSourceFolderId,
+      wordbookId: _lastWordbookId,
     );
   }
 

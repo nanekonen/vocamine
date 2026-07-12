@@ -57,6 +57,7 @@ class MaterialItem {
   final List<Uint8List> sourcePageImages;
   final List<SourceWordBox> sourceWordBoxes;
   final String? folderId;
+  final String? defaultWordbookId;
   final String? sourceObjectStorageKey;
   final String? readablePdfObjectStorageKey;
   final String? thumbnailObjectStorageKey;
@@ -71,6 +72,7 @@ class MaterialItem {
     this.sourcePageImages = const [],
     this.sourceWordBoxes = const [],
     this.folderId,
+    this.defaultWordbookId,
     this.sourceObjectStorageKey,
     this.readablePdfObjectStorageKey,
     this.thumbnailObjectStorageKey,
@@ -78,6 +80,10 @@ class MaterialItem {
   });
 
   MaterialItem copyWith({
+    String? title,
+    String? folderId,
+    bool clearFolder = false,
+    String? defaultWordbookId,
     String? ocrText,
     Uint8List? sourceBytes,
     String? sourceMimeType,
@@ -86,13 +92,14 @@ class MaterialItem {
   }) {
     return MaterialItem(
       id: id,
-      title: title,
+      title: title ?? this.title,
       ocrText: ocrText ?? this.ocrText,
       sourceBytes: sourceBytes ?? this.sourceBytes,
       sourceMimeType: sourceMimeType ?? this.sourceMimeType,
       sourcePageImages: sourcePageImages ?? this.sourcePageImages,
       sourceWordBoxes: sourceWordBoxes ?? this.sourceWordBoxes,
-      folderId: folderId,
+      folderId: clearFolder ? null : folderId ?? this.folderId,
+      defaultWordbookId: defaultWordbookId ?? this.defaultWordbookId,
       sourceObjectStorageKey: sourceObjectStorageKey,
       readablePdfObjectStorageKey: readablePdfObjectStorageKey,
       thumbnailObjectStorageKey: thumbnailObjectStorageKey,
@@ -119,6 +126,7 @@ class MaterialItem {
           .map(SourceWordBox.fromJson)
           .toList(),
       folderId: json['folder_id'] as String?,
+      defaultWordbookId: json['default_wordbook_id'] as String?,
       sourceObjectStorageKey: json['source_object_storage_key'] as String?,
       readablePdfObjectStorageKey:
           json['readable_pdf_object_storage_key'] as String?,
@@ -135,8 +143,9 @@ Uint8List? _decodeDataUrlBytes(String dataUrl) {
   final commaIndex = dataUrl.indexOf(',');
   final raw = commaIndex >= 0 ? dataUrl.substring(commaIndex + 1) : dataUrl;
   try {
-    return UriData.parse('data:application/octet-stream;base64,$raw')
-        .contentAsBytes();
+    return UriData.parse(
+      'data:application/octet-stream;base64,$raw',
+    ).contentAsBytes();
   } catch (_) {
     return null;
   }

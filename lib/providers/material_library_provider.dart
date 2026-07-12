@@ -69,6 +69,11 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
 
       _loadedUserId = userId;
       _loaded = true; // 成功したときだけtrue
+      for (final material in library.materials) {
+        if (material.ocrText.trim().isNotEmpty) {
+          unawaited(analyzeMaterial(material.id));
+        }
+      }
     } catch (error, stackTrace) {
       _loaded = false; // 念のため明示
       // debugPrint('Failed to load material library: $error');
@@ -86,6 +91,42 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
       parentId: parentId,
     );
     state = state.copyWith(folders: [...state.folders, folder]);
+  }
+
+  Future<void> renameFolder(String folderId, String name) async {
+    final updated = await _api.updateMaterialFolder(
+      userId: ref.read(appSessionProvider).userId,
+      folderId: folderId,
+      name: name,
+    );
+    _replaceFolder(updated);
+  }
+
+  Future<void> moveFolder(String folderId, String? parentId) async {
+    final updated = await _api.updateMaterialFolder(
+      userId: ref.read(appSessionProvider).userId,
+      folderId: folderId,
+      parentId: parentId,
+      updateParent: true,
+    );
+    _replaceFolder(updated);
+  }
+
+  Future<void> deleteFolder(String folderId) async {
+    await _api.deleteMaterialFolder(
+      userId: ref.read(appSessionProvider).userId,
+      folderId: folderId,
+    );
+    await load(force: true);
+  }
+
+  void _replaceFolder(AppFolder updated) {
+    state = state.copyWith(
+      folders: [
+        for (final folder in state.folders)
+          if (folder.id == updated.id) updated else folder,
+      ],
+    );
   }
 
   Future<String> addMaterial(
@@ -172,6 +213,63 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
         },
       );
     }
+  }
+
+  Future<void> deleteMaterial(String materialId) async {
+    final userId = ref.read(appSessionProvider).userId;
+    await _api.deleteMaterial(userId: userId, materialId: materialId);
+    final analyses = {...state.analyses}..remove(materialId);
+    state = state.copyWith(
+      materials: state.materials
+          .where((material) => material.id != materialId)
+          .toList(),
+      analyses: analyses,
+    );
+  }
+
+  Future<void> renameMaterial(String materialId, String title) async {
+    final updated = await _api.updateMaterial(
+      userId: ref.read(appSessionProvider).userId,
+      materialId: materialId,
+      title: title,
+    );
+    _replaceMaterial(updated);
+  }
+
+  Future<void> moveMaterial(String materialId, String? folderId) async {
+    final updated = await _api.updateMaterial(
+      userId: ref.read(appSessionProvider).userId,
+      materialId: materialId,
+      folderId: folderId,
+      updateFolder: true,
+    );
+    _replaceMaterial(updated);
+  }
+
+  Future<void> appendPages(
+    String materialId, {
+    required String extractedText,
+    required List<Uint8List> pageImages,
+    required List<SourceWordBox> wordBoxes,
+  }) async {
+    final updated = await _api.appendMaterialPages(
+      userId: ref.read(appSessionProvider).userId,
+      materialId: materialId,
+      extractedText: extractedText,
+      pageImages: pageImages,
+      wordBoxes: wordBoxes,
+    );
+    _replaceMaterial(updated);
+    await analyzeMaterial(materialId, force: true);
+  }
+
+  void _replaceMaterial(MaterialItem updated) {
+    state = state.copyWith(
+      materials: [
+        for (final material in state.materials)
+          if (material.id == updated.id) updated else material,
+      ],
+    );
   }
 
   String _analysisTextForMaterial(MaterialItem material) {
