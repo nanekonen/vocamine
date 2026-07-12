@@ -50,24 +50,31 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
 
   Future<void> load({bool force = false}) async {
     if (_loaded && !force) return;
+
     final userId = ref.read(appSessionProvider).userId;
     if (userId.isEmpty || userId == 'guest') return;
+
     if (_loadedUserId != null && _loadedUserId != userId) {
       _loaded = false;
       state = const MaterialLibraryState(folders: [], materials: []);
     }
+
     try {
       final library = await _api.fetchMaterialLibrary(userId: userId);
+
       state = state.copyWith(
         folders: library.folders,
         materials: library.materials,
       );
+
       _loadedUserId = userId;
-    } catch (_) {
-      // Materials persistence may not be migrated yet. Keep the local library
-      // usable so vocabulary notebooks are not hidden by that failure.
-    } finally {
-      _loaded = true;
+      _loaded = true; // 成功したときだけtrue
+    } catch (error, stackTrace) {
+      _loaded = false; // 念のため明示
+      // debugPrint('Failed to load material library: $error');
+      // FlutterError.reportError(
+      //   FlutterErrorDetails(exception: error, stack: stackTrace),
+      // );
     }
   }
 
@@ -168,25 +175,9 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
   }
 
   String _analysisTextForMaterial(MaterialItem material) {
-    final text = material.ocrText.trim();
-    if (text.isNotEmpty) {
-      return text;
-    }
-
-    final boxes = [...material.sourceWordBoxes]
-      ..sort((a, b) {
-        final pageCompare = a.pageIndex.compareTo(b.pageIndex);
-        if (pageCompare != 0) return pageCompare;
-        final lineCompare = (a.top * 100).round().compareTo(
-          (b.top * 100).round(),
-        );
-        if (lineCompare != 0) return lineCompare;
-        return a.left.compareTo(b.left);
-      });
-    return boxes
-        .map((box) => box.text.trim())
-        .where((text) => text.isNotEmpty)
-        .join(' ');
+    // 登録時にreadable PDF（画像の場合は登録時OCR）から確定して保存した本文だけを使う。
+    // 詳細表示や一覧取得のたびにOCR・box再構築は行わない。
+    return material.ocrText.trim();
   }
 }
 

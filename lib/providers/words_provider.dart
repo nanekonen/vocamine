@@ -93,37 +93,3 @@ class WordsNotifier extends Notifier<AsyncValue<List<Word>>> {
 final wordsProvider = NotifierProvider<WordsNotifier, AsyncValue<List<Word>>>(
   WordsNotifier.new,
 );
-
-class LearnedWordsNotifier extends Notifier<AsyncValue<List<Word>>> {
-  final _api = VocamineApiClient();
-  String? _loadedUserId;
-
-  @override
-  AsyncValue<List<Word>> build() {
-    final session = ref.watch(appSessionProvider);
-    if (_loadedUserId != null && _loadedUserId != session.userId) {
-      _loadedUserId = null;
-    }
-    return const AsyncValue.data([]);
-  }
-
-  Future<void> load() async {
-    state = const AsyncValue.loading();
-    try {
-      final userId = ref.read(appSessionProvider).userId;
-      final words = await _api.fetchWordbook(
-        userId: userId,
-        isLearned: true,
-      );
-      _loadedUserId = userId;
-      state = AsyncValue.data(words);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
-  }
-}
-
-final learnedWordsProvider =
-    NotifierProvider<LearnedWordsNotifier, AsyncValue<List<Word>>>(
-      LearnedWordsNotifier.new,
-    );

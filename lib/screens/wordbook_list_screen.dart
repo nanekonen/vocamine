@@ -2,12 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../models/word.dart';
 import '../providers/material_library_provider.dart';
 import '../providers/wordbook_library_provider.dart';
-import '../providers/words_provider.dart';
 import '../services/app_session.dart';
-import '../utils/part_of_speech_label.dart';
 
 class WordbookListScreen extends ConsumerStatefulWidget {
   final String? folderId;
@@ -38,9 +35,6 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
 
   void _load() {
     ref.read(materialLibraryProvider.notifier).load();
-    if (_isRoot) {
-      ref.read(wordsProvider.notifier).load(isLearned: false);
-    }
   }
 
   @override
@@ -54,9 +48,6 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
     final wordbooks = library.wordbooks
         .where((book) => book.folderId == widget.folderId)
         .toList();
-    final wordsState = _isRoot
-        ? ref.watch(wordsProvider)
-        : const AsyncValue<List<Word>>.data([]);
 
     return Scaffold(
       appBar: AppBar(
@@ -88,15 +79,6 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
               ],
             ),
             const SizedBox(height: 18),
-            if (_isRoot) ...[
-              _UnlearnedWordsList(wordsState: wordsState),
-              const SizedBox(height: 28),
-              Text(
-                '教材別',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 12),
-            ],
             if (wordbooks.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 24),
@@ -142,93 +124,6 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
                   ),
                 ],
               ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _UnlearnedWordsList extends ConsumerWidget {
-  final AsyncValue<List<Word>> wordsState;
-
-  const _UnlearnedWordsList({required this.wordsState});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return wordsState.when(
-      loading: () => const Padding(
-        padding: EdgeInsets.symmetric(vertical: 32),
-        child: Center(child: CircularProgressIndicator()),
-      ),
-      error: (error, _) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Text('単語帳の取得に失敗しました: $error'),
-      ),
-      data: (words) {
-        if (words.isEmpty) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 24),
-            child: Text(
-              '未学習単語はまだありません',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          );
-        }
-        return Column(
-          children: [
-            for (final word in words)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _WordCard(word: word),
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _WordCard extends ConsumerWidget {
-  final Word word;
-
-  const _WordCard({required this.word});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    word.headword,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(word.meaningJa),
-                  const SizedBox(height: 8),
-                  Chip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text(partOfSpeechLabel(word.partOfSpeech)),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: () {
-                ref.read(wordsProvider.notifier).toggleLearned(word.id);
-              },
-              icon: const Icon(Icons.check_circle_outline, size: 18),
-              label: const Text('覚えた'),
-            ),
           ],
         ),
       ),

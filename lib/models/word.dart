@@ -6,6 +6,7 @@ class Word {
   final String partOfSpeech;
   final bool isLearned;
   final int? meaningId;
+  final int? tier;
   final List<String> sourceMaterialIds;
   final List<String> sourceFolderIds;
 
@@ -17,6 +18,7 @@ class Word {
     required this.partOfSpeech,
     this.isLearned = false,
     this.meaningId,
+    this.tier,
     this.sourceMaterialIds = const [],
     this.sourceFolderIds = const [],
   });
@@ -30,6 +32,7 @@ class Word {
       partOfSpeech: partOfSpeech,
       isLearned: isLearned ?? this.isLearned,
       meaningId: meaningId,
+      tier: tier,
       sourceMaterialIds: sourceMaterialIds,
       sourceFolderIds: sourceFolderIds,
     );
@@ -67,6 +70,7 @@ class Word {
       partOfSpeech: meaning['part_of_speech'] as String? ?? '',
       isLearned: json['is_learned'] as bool? ?? false,
       meaningId: json['meaning_id'] as int?,
+      tier: meaning['tier'] as int?,
       sourceMaterialIds: sourceMaterialIds,
       sourceFolderIds: sourceFolderIds,
     );

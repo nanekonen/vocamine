@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +18,11 @@ enum _MaterialDisplayMode { original, text }
 enum _SidePanelMode { selection, unknown }
 
 final _englishWordPattern = RegExp(r"[A-Za-z]+(?:['’-][A-Za-z]+)*");
+
+bool canDisplayOriginalSource(MaterialItem material) {
+  return material.sourceMimeType != null &&
+      (material.sourceBytes != null || material.sourcePageImages.isNotEmpty);
+}
 
 class _WordLookupCache {
   final _api = VocamineApiClient();
@@ -87,34 +93,6 @@ String _cleanLookupWord(String word) {
   return match?.group(0) ?? word.trim();
 }
 
-List<String> _lookupKeysForWord(String word) {
-  final normalized = _normalizeLookupWord(_cleanLookupWord(word));
-  final keys = <String>[normalized];
-  if (normalized.endsWith("'s") && normalized.length > 2) {
-    keys.add(normalized.substring(0, normalized.length - 2));
-  }
-  if (normalized.endsWith('ies') && normalized.length > 4) {
-    keys.add('${normalized.substring(0, normalized.length - 3)}y');
-  }
-  if (normalized.endsWith('ing') && normalized.length > 5) {
-    final stem = normalized.substring(0, normalized.length - 3);
-    keys.add(stem);
-    keys.add('${stem}e');
-  }
-  if (normalized.endsWith('ed') && normalized.length > 4) {
-    final stem = normalized.substring(0, normalized.length - 2);
-    keys.add(stem);
-    keys.add('${stem}e');
-  }
-  if (normalized.endsWith('es') && normalized.length > 4) {
-    keys.add(normalized.substring(0, normalized.length - 2));
-  }
-  if (normalized.endsWith('s') && normalized.length > 3) {
-    keys.add(normalized.substring(0, normalized.length - 1));
-  }
-  return keys.toSet().toList();
-}
-
 int _compareMeaningForContext(
   MeaningInfo a,
   MeaningInfo b,
@@ -180,7 +158,6 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
   double _zoom = 1.0;
   final _lookupCache = _WordLookupCache();
   final Set<String> _autoAnalysisRequested = {};
-
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(materialLibraryProvider);
@@ -199,9 +176,7 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
     analysis?.whenOrNull(
       data: (result) => _lookupCache.primeExistingMeanings(result.items),
     );
-    final hasSource =
-        material.sourceMimeType != null &&
-        (material.sourceBytes != null || material.sourcePageImages.isNotEmpty);
+    final hasSource = canDisplayOriginalSource(material);
     final effectiveMode = hasSource ? _displayMode : _MaterialDisplayMode.text;
 
     return Scaffold(
@@ -359,7 +334,7 @@ class _ToolbarIconButton extends StatelessWidget {
   }
 }
 
-class _MaterialContentView extends ConsumerWidget {
+class _MaterialContentView extends ConsumerStatefulWidget {
   final MaterialItem material;
   final _MaterialDisplayMode mode;
   final AsyncValue<ExtractWordsResult>? analysis;
@@ -379,23 +354,512 @@ class _MaterialContentView extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (mode == _MaterialDisplayMode.original &&
-        material.sourceBytes != null &&
-        material.sourceMimeType != null) {
-      return SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.68,
-        child: _OriginalSourceLearningView(
-          material: material,
-          analysis: analysis,
-          lookupCache: lookupCache,
-          zoom: zoom,
-          sidePanelMode: sidePanelMode,
-          onSidePanelModeChanged: onSidePanelModeChanged,
+  ConsumerState<_MaterialContentView> createState() =>
+      _MaterialContentViewState();
+}
+
+class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
+  final GlobalKey _textKey = GlobalKey();
+  OverlayEntry? _popoverEntry;
+  String? _hoveredRangeKey;
+  int? _selectionStart;
+  int? _selectionEnd;
+  int? _dragPageIndex;
+  int? _dragSelectionAnchor;
+  DateTime? _lastPointerDownAt;
+  Offset? _lastPointerDownPosition;
+  DateTime? _suppressSelectionUntil;
+
+  ExtractWordsResult? get _result => widget.analysis?.maybeWhen(
+    data: (value) => value,
+    orElse: () => null,
+  );
+
+  _LearningTextState get _learningTextState => _LearningTextState(
+    text: widget.material.ocrText,
+    result: _result,
+    selectionStart: _selectionStart,
+    selectionEnd: _selectionEnd,
+  );
+
+  List<Uint8List> get _sourcePages {
+    if (widget.material.sourcePageImages.isNotEmpty) {
+      return widget.material.sourcePageImages;
+    }
+    final bytes = widget.material.sourceBytes;
+    return bytes == null ? const [] : [bytes];
+  }
+
+  @override
+  void dispose() {
+    _popoverEntry?.remove();
+    super.dispose();
+  }
+
+  void _hideMeaningPopover() {
+    _popoverEntry?.remove();
+    _popoverEntry = null;
+  }
+
+  void _showMeaningPopover(LexicalItemResult item, Offset globalPosition) {
+    _hideMeaningPopover();
+    final overlay = Overlay.of(context);
+    final screenSize = MediaQuery.sizeOf(context);
+    const width = 340.0;
+    final left = (globalPosition.dx - 28).clamp(
+      12.0,
+      (screenSize.width - width - 12).clamp(12.0, screenSize.width),
+    );
+    final belowTop = globalPosition.dy + 18;
+    const popoverMaxHeight = 460.0;
+    final maxTop = (screenSize.height - popoverMaxHeight - 12).clamp(
+      12.0,
+      screenSize.height,
+    );
+    final top = belowTop > maxTop
+        ? (globalPosition.dy - popoverMaxHeight - 16).clamp(12.0, maxTop)
+        : belowTop;
+
+    _popoverEntry = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _hideMeaningPopover,
+              ),
+            ),
+            Positioned(
+              left: left,
+              top: top,
+              width: width,
+              child: _MeaningPopover(
+                item: item,
+                future: widget.lookupCache.lookup(item),
+                userId: ref.read(appSessionProvider).userId,
+                material: widget.material,
+                onAdded: () =>
+                    ref.read(wordsProvider.notifier).load(isLearned: false),
+                onClose: _hideMeaningPopover,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    overlay.insert(_popoverEntry!);
+  }
+
+  void _setHoveredRange(String? key) {
+    if (_hoveredRangeKey == key) return;
+    setState(() => _hoveredRangeKey = key);
+  }
+
+  void _clearSelection() {
+    if (_selectionStart == null &&
+        _selectionEnd == null &&
+        _dragPageIndex == null &&
+        _dragSelectionAnchor == null) {
+      return;
+    }
+    setState(() {
+      _selectionStart = null;
+      _selectionEnd = null;
+      _dragPageIndex = null;
+      _dragSelectionAnchor = null;
+    });
+    if (widget.sidePanelMode == _SidePanelMode.selection) {
+      widget.onSidePanelModeChanged(null);
+    }
+  }
+
+  TextStyle? _textStyle(BuildContext context) {
+    final base = Theme.of(context).textTheme.bodyLarge;
+    return base?.copyWith(
+      height: 1.8,
+      fontSize: (base.fontSize ?? 16) * widget.zoom,
+    );
+  }
+
+  List<InlineSpan> _buildTextSpans(_LearningTextState state) {
+    final baseStyle = _textStyle(context);
+    final spans = <InlineSpan>[];
+    for (final segment in state.segmentsForRange(
+      0,
+      state.text.length,
+      hoveredRangeKey: _hoveredRangeKey,
+    )) {
+      final range = segment.range;
+      final rangeKey = range?.kind == _MarkedRangeKind.word
+          ? _markedRangeKey(range!.start, range!.end)
+          : null;
+      final color = segment.visual.backgroundColor;
+      spans.add(
+        TextSpan(
+          text: state.text.substring(segment.start, segment.end),
+          style: color == null
+              ? baseStyle
+              : baseStyle?.copyWith(backgroundColor: color),
+          mouseCursor: rangeKey == null ? null : SystemMouseCursors.click,
+          onEnter: rangeKey == null ? null : (_) => _setHoveredRange(rangeKey),
+          onExit: rangeKey == null
+              ? null
+              : (_) {
+                  if (_hoveredRangeKey == rangeKey) {
+                    _setHoveredRange(null);
+                  }
+                },
         ),
       );
     }
+    return [TextSpan(style: baseStyle, children: spans)];
+  }
 
+  LexicalItemResult? _itemAtTextPosition(
+    Offset localPosition,
+    double maxWidth,
+  ) {
+    final text = widget.material.ocrText;
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: _textStyle(context)),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      locale: Localizations.maybeLocaleOf(context),
+      textHeightBehavior: DefaultTextStyle.of(context).textHeightBehavior,
+    )..layout(maxWidth: maxWidth);
+    final offset = painter
+        .getPositionForOffset(localPosition)
+        .offset
+        .clamp(0, text.length)
+        .toInt();
+    if (offset >= text.length) return null;
+    return _learningTextState.wordRangeAtOffset(offset)?.item;
+  }
+
+  void _handleTextPointerDown(PointerDownEvent event, double maxWidth) {
+    final now = DateTime.now();
+    final previousTime = _lastPointerDownAt;
+    final previousPosition = _lastPointerDownPosition;
+    _lastPointerDownAt = now;
+    _lastPointerDownPosition = event.position;
+    if (previousTime == null || previousPosition == null) return;
+
+    final isDoubleClick =
+        now.difference(previousTime) <= const Duration(milliseconds: 360) &&
+        (event.position - previousPosition).distance <= 8;
+    if (!isDoubleClick) return;
+
+    final renderBox = _textKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+
+    final state = _learningTextState;
+    final hoveredItem = _hoveredRangeKey == null
+        ? null
+        : state.rangeForKey(_hoveredRangeKey!)?.item;
+    final item =
+        hoveredItem ??
+        _itemAtTextPosition(renderBox.globalToLocal(event.position), maxWidth);
+    if (item == null) return;
+
+    _suppressSelectionUntil = DateTime.now().add(
+      const Duration(milliseconds: 500),
+    );
+    setState(() {
+      _selectionStart = null;
+      _selectionEnd = null;
+    });
+    _showMeaningPopover(item, event.position);
+  }
+
+  int? _textOffsetAtSourcePosition(
+    int pageIndex,
+    Offset position,
+    Size pageSize,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    for (final resolved in sourceBoxes.where(
+      (resolved) => resolved.box.pageIndex == pageIndex,
+    )) {
+      final box = resolved.box;
+      final rect = Rect.fromLTWH(
+        box.left * pageSize.width,
+        box.top * pageSize.height,
+        box.width * pageSize.width,
+        box.height * pageSize.height,
+      );
+      if (!rect.contains(position)) {
+        continue;
+      }
+      return _offsetWithinSourceRange(
+        rect,
+        position,
+        (start: resolved.textRange.start, end: resolved.textRange.end),
+      );
+    }
+    return null;
+  }
+
+  int _offsetWithinSourceRange(
+    Rect rect,
+    Offset position,
+    ({int start, int end}) range,
+  ) {
+    if (range.end <= range.start || rect.width <= 0) return range.start;
+    final ratio = ((position.dx - rect.left) / rect.width).clamp(0.0, 1.0);
+    return range.start + ((range.end - range.start) * ratio).round();
+  }
+
+  int? _sourceOffsetAt(
+    int pageIndex,
+    Offset position,
+    Size pageSize,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    return _textOffsetAtSourcePosition(
+      pageIndex,
+      position,
+      pageSize,
+      sourceBoxes,
+    );
+  }
+
+  Rect _sourceSegmentRect(
+    SourceWordBox box,
+    Size pageSize,
+    _TextRange boxRange,
+    _LearningTextSegment segment,
+  ) {
+    final boxWidth = box.width * pageSize.width;
+    final local = _selectionRectWithinBox(
+      boxRange,
+      _TextRange(segment.start, segment.end),
+      boxWidth,
+    );
+    return Rect.fromLTWH(
+      box.left * pageSize.width + local.left,
+      box.top * pageSize.height,
+      math.max(0.5, local.width).toDouble(),
+      box.height * pageSize.height,
+    );
+  }
+
+  Widget _buildSourceSegment(
+    SourceWordBox box,
+    Size pageSize,
+    _TextRange boxRange,
+    _LearningTextSegment segment,
+  ) {
+    final range = segment.range;
+    final isWord = range?.kind == _MarkedRangeKind.word;
+    final rangeKey = isWord
+        ? _markedRangeKey(range!.start, range!.end)
+        : null;
+    final color = segment.visual.backgroundColor;
+
+    return Positioned.fromRect(
+      rect: _sourceSegmentRect(box, pageSize, boxRange, segment),
+      child: MouseRegion(
+        cursor: isWord ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onEnter: rangeKey == null ? null : (_) => _setHoveredRange(rangeKey),
+        onExit: rangeKey == null
+            ? null
+            : (_) {
+                if (_hoveredRangeKey == rangeKey) {
+                  _setHoveredRange(null);
+                }
+              },
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onDoubleTapDown: !isWord
+              ? null
+              : (details) =>
+                    _showMeaningPopover(range!.item, details.globalPosition),
+          onLongPressStart: !isWord
+              ? null
+              : (details) =>
+                    _showMeaningPopover(range!.item, details.globalPosition),
+          child: color == null
+              ? const SizedBox.expand()
+              : DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildSourceSegments(
+    _ResolvedSourceBox resolved,
+    Size pageSize,
+    _LearningTextState state,
+  ) {
+    final boxRange = resolved.textRange;
+    return [
+      for (final segment in state.segmentsForRange(
+        boxRange.start,
+        boxRange.end,
+        hoveredRangeKey: _hoveredRangeKey,
+      ))
+        _buildSourceSegment(
+          resolved.box,
+          pageSize,
+          boxRange,
+          segment,
+        ),
+    ];
+  }
+
+  Widget _buildSourcePage(
+    Uint8List imageBytes,
+    int pageIndex,
+    _LearningTextState state,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    final pageBoxes = sourceBoxes
+        .where((resolved) => resolved.box.pageIndex == pageIndex)
+        .toList();
+
+    return FractionallySizedBox(
+      widthFactor: widget.zoom,
+      alignment: Alignment.topLeft,
+      child: Stack(
+        fit: StackFit.passthrough,
+        children: [
+          Image.memory(imageBytes, width: double.infinity, fit: BoxFit.fitWidth),
+          Positioned.fill(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final pageSize = Size(
+                  constraints.maxWidth,
+                  constraints.maxHeight,
+                );
+                return Listener(
+                  behavior: HitTestBehavior.translucent,
+                  onPointerDown: (_) {
+                    if (_selectionStart != null || _selectionEnd != null) {
+                      _clearSelection();
+                    }
+                  },
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: _clearSelection,
+                    onPanStart: (details) {
+                    final anchor = _sourceOffsetAt(
+                      pageIndex,
+                      details.localPosition,
+                      pageSize,
+                      sourceBoxes,
+                    );
+                    if (anchor == null) {
+                      return;
+                    }
+                    setState(() {
+                      _dragPageIndex = pageIndex;
+                      _dragSelectionAnchor = anchor;
+                      _selectionStart = anchor;
+                      _selectionEnd = anchor;
+                    });
+                    widget.onSidePanelModeChanged(_SidePanelMode.selection);
+                  },
+                  onPanUpdate: (details) {
+                    final anchor = _dragSelectionAnchor;
+                    if (_dragPageIndex != pageIndex || anchor == null) {
+                      return;
+                    }
+                    final current = _sourceOffsetAt(
+                      pageIndex,
+                      details.localPosition,
+                      pageSize,
+                      sourceBoxes,
+                    );
+                    if (current == null) {
+                      return;
+                    }
+                    setState(() {
+                      _selectionStart = anchor;
+                      _selectionEnd = current;
+                    });
+                  },
+                  onPanEnd: (_) {
+                    setState(() {
+                      _dragPageIndex = null;
+                      _dragSelectionAnchor = null;
+                    });
+                  },
+                  onPanCancel: () {
+                    setState(() {
+                      _dragPageIndex = null;
+                      _dragSelectionAnchor = null;
+                    });
+                  },
+                    child: Stack(
+                      children: [
+                        for (final resolved in pageBoxes)
+                          ..._buildSourceSegments(resolved, pageSize, state),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSourceContent(_LearningTextState state) {
+    final pages = _sourcePages;
+    if (pages.isEmpty) {
+      return const Center(child: Text('原本プレビューを生成できませんでした'));
+    }
+    final sourceBoxes = _resolveSourceBoxes(
+      widget.material.sourceWordBoxes,
+      state.text,
+    );
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: ListView.separated(
+          padding: const EdgeInsets.all(12),
+          itemCount: pages.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 12),
+          itemBuilder: (context, index) {
+            return DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: Colors.grey.shade300),
+                boxShadow: const [
+                  BoxShadow(
+                    blurRadius: 8,
+                    color: Color(0x1F000000),
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: _buildSourcePage(
+                pages[index],
+                index,
+                state,
+                sourceBoxes,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTextContent(_LearningTextState state, double maxWidth) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
@@ -404,31 +868,111 @@ class _MaterialContentView extends ConsumerWidget {
         border: Border.all(color: const Color(0xFFE3DED3)),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: _InteractiveTextView(
-        material: material,
-        text: material.ocrText,
-        analysis: analysis,
-        lookupCache: lookupCache,
-        zoom: zoom,
-        sidePanelMode: sidePanelMode,
-        onSidePanelModeChanged: onSidePanelModeChanged,
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (event) => _handleTextPointerDown(event, maxWidth),
+        child: SelectableText.rich(
+          TextSpan(children: _buildTextSpans(state)),
+          key: _textKey,
+          onSelectionChanged: (selection, cause) {
+            final suppressUntil = _suppressSelectionUntil;
+            if (suppressUntil != null &&
+                DateTime.now().isBefore(suppressUntil)) {
+              return;
+            }
+            if (selection.isCollapsed) {
+              _clearSelection();
+              return;
+            }
+            widget.onSidePanelModeChanged(_SidePanelMode.selection);
+            setState(() {
+              _selectionStart = selection.start;
+              _selectionEnd = selection.end;
+            });
+          },
+        ),
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = _learningTextState;
+    final result = _result;
+    final panelItems = widget.sidePanelMode == _SidePanelMode.unknown
+        ? (result?.unknownItems ?? const <LexicalItemResult>[])
+        : state.selectedItems();
+    final sidePanel = _SelectionMeaningPanel(
+      title: widget.sidePanelMode == _SidePanelMode.unknown ? '未知語' : '選択範囲',
+      items: panelItems,
+      userId: ref.read(appSessionProvider).userId,
+      material: widget.material,
+      onAdded: () => ref.read(wordsProvider.notifier).load(isLearned: false),
+      onShowDetails: _showMeaningPopover,
+      lookupCache: widget.lookupCache,
+    );
+    final showSource =
+        widget.mode == _MaterialDisplayMode.original &&
+        canDisplayOriginalSource(widget.material);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final contentWidth = constraints.maxWidth < 760
+            ? constraints.maxWidth
+            : constraints.maxWidth - 340;
+        final content = showSource
+            ? _buildSourceContent(state)
+            : _buildTextContent(state, contentWidth);
+
+        if (constraints.maxWidth < 760) {
+          if (showSource) {
+            return SizedBox(
+              height: MediaQuery.sizeOf(context).height * 0.68,
+              child: Column(
+                children: [
+                  Expanded(child: content),
+                  if (panelItems.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(height: 260, child: sidePanel),
+                  ],
+                ],
+              ),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              content,
+              if (panelItems.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                sidePanel,
+              ],
+            ],
+          );
+        }
+
+        final row = Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: content),
+            const SizedBox(width: 20),
+            SizedBox(width: 320, child: sidePanel),
+          ],
+        );
+        return showSource
+            ? SizedBox(
+                height: MediaQuery.sizeOf(context).height * 0.68,
+                child: row,
+              )
+            : row;
+      },
     );
   }
 }
 
+
 String _sourceTypeForMaterial(MaterialItem material) {
   return material.sourceMimeType == 'application/pdf' ? 'pdf_material' : 'image_material';
-}
-
-LexicalItemResult _lexicalItemForWord(
-  String word,
-  AsyncValue<ExtractWordsResult>? analysis,
-) {
-  return _lexicalItemForWordInResult(
-    word,
-    analysis?.whenOrNull(data: (result) => result),
-  );
 }
 
 LexicalItemResult _lexicalItemForWordInResult(
@@ -440,69 +984,34 @@ LexicalItemResult _lexicalItemForWordInResult(
   final cleaned = _cleanLookupWord(word);
   final normalized = _normalizeLookupWord(cleaned);
   final items = result?.items ?? const <LexicalItemResult>[];
+
+  // 表示中の文字範囲と解析結果の occurrence が完全一致するときだけ、
+  // その解析項目を使用する。UI側で複数形・活用形・別の出現位置を推測しない。
   if (start != null && end != null) {
     for (final item in items.where((item) => item.kind == 'word')) {
-      for (final occurrence in item.occurrences) {
-        if (occurrence.start == start && occurrence.end == end) {
-          return item;
-        }
+      final hasExactOccurrence = item.occurrences.any(
+        (occurrence) => occurrence.start == start && occurrence.end == end,
+      );
+      if (!hasExactOccurrence) {
+        continue;
+      }
+      final normalizedForms = <String>{
+        _normalizeLookupWord(item.text),
+        ...item.surfaceForms.map(_normalizeLookupWord),
+      };
+      if (normalizedForms.contains(normalized)) {
+        return item;
       }
     }
   }
-  final wordItems = {
-    for (final item in items.where((item) => item.kind == 'word'))
-      _normalizeLookupWord(item.text): item,
-  };
-  final surfaceItems = <String, LexicalItemResult>{};
-  for (final item in items) {
-    final forms = [item.text, ...item.surfaceForms].map(_normalizeLookupWord);
-    if (forms.contains(normalized)) {
-      return item;
-    }
-    if (item.kind == 'word') {
-      for (final form in forms) {
-        surfaceItems[form] = item;
-      }
-    }
-  }
-  for (final key in _lookupKeysForWord(cleaned)) {
-    final item = surfaceItems[key] ?? wordItems[key];
-    if (item != null) {
+
+  // occurrence がない解析結果に限り、見出し語そのものの完全一致だけ許可する。
+  for (final item in items.where((item) => item.kind == 'word')) {
+    if (_normalizeLookupWord(item.text) == normalized) {
       return item;
     }
   }
   return _fallbackLexicalItem(cleaned);
-}
-
-List<LexicalItemResult> _itemsFullyContainedInRange(
-  ExtractWordsResult? result,
-  int? selectionStart,
-  int? selectionEnd,
-) {
-  if (result == null || selectionStart == null || selectionEnd == null) {
-    return const [];
-  }
-  final start = selectionStart < selectionEnd ? selectionStart : selectionEnd;
-  final end = selectionStart < selectionEnd ? selectionEnd : selectionStart;
-  if (start == end) {
-    return const [];
-  }
-
-  final selectedItems = <LexicalItemResult>[];
-  final seen = <String>{};
-  for (final item in result.items) {
-    final isIncluded = item.occurrences.any(
-      (occurrence) => occurrence.start >= start && occurrence.end <= end,
-    );
-    if (!isIncluded) {
-      continue;
-    }
-    final key = '${item.text}:${item.partOfSpeech}:${item.partOfSpeechDetail}';
-    if (seen.add(key)) {
-      selectedItems.add(item);
-    }
-  }
-  return selectedItems;
 }
 
 class _LearningTextState {
@@ -525,11 +1034,89 @@ class _LearningTextState {
   });
 
   List<LexicalItemResult> selectedItems() {
-    return _itemsFullyContainedInRange(result, selectionStart, selectionEnd);
+    final selected = <LexicalItemResult>[];
+    final seen = <String>{};
+    for (final range in ranges.where((range) => range.isSelected)) {
+      final item = range.item;
+      final key = '${item.text}:${item.partOfSpeech}:${item.partOfSpeechDetail}';
+      if (seen.add(key)) {
+        selected.add(item);
+      }
+    }
+    return selected;
   }
 
-  LexicalItemResult itemForWordRange(String word, int start, int end) {
-    return _lexicalItemForWordInResult(word, result, start: start, end: end);
+  List<_LearningTextSegment> segmentsForRange(
+    int start,
+    int end, {
+    String? hoveredRangeKey,
+  }) {
+    if (start >= end) {
+      return const [];
+    }
+    final boundaries = <int>{start, end};
+    final selection = _normalizedSelection;
+    if (selection != null && start < selection.end && end > selection.start) {
+      boundaries
+        ..add(math.max(start, selection.start))
+        ..add(math.min(end, selection.end));
+    }
+    for (final range in ranges) {
+      if (start >= range.end || end <= range.start) {
+        continue;
+      }
+      boundaries
+        ..add(math.max(start, range.start))
+        ..add(math.min(end, range.end));
+    }
+
+    final sorted = boundaries.toList()..sort();
+    final segments = <_LearningTextSegment>[];
+    for (var index = 0; index < sorted.length - 1; index++) {
+      final segmentStart = sorted[index];
+      final segmentEnd = sorted[index + 1];
+      if (segmentStart >= segmentEnd) {
+        continue;
+      }
+      final range = _rangeCoveringSegment(ranges, segmentStart, segmentEnd);
+      final isHovered =
+          range != null &&
+          range.kind == _MarkedRangeKind.word &&
+          hoveredRangeKey == _markedRangeKey(range.start, range.end);
+      segments.add(
+        _LearningTextSegment(
+          start: segmentStart,
+          end: segmentEnd,
+          range: range,
+          visual: markerForRange(
+            segmentStart,
+            segmentEnd,
+            isHovered: isHovered,
+          ),
+        ),
+      );
+    }
+    return segments;
+  }
+
+  _MarkedRange? wordRangeAtOffset(int offset) {
+    for (final range in ranges.where(
+      (range) => range.kind == _MarkedRangeKind.word,
+    )) {
+      if (offset >= range.start && offset < range.end) {
+        return range;
+      }
+    }
+    return null;
+  }
+
+  _MarkedRange? rangeForKey(String key) {
+    for (final range in ranges) {
+      if (_markedRangeKey(range.start, range.end) == key) {
+        return range;
+      }
+    }
+    return null;
   }
 
   _MarkerVisual markerForRange(int start, int end, {bool isHovered = false}) {
@@ -540,19 +1127,6 @@ class _LearningTextState {
       isHovered: isHovered,
       touchesSelection: _selectionOverlaps(start, end),
     );
-  }
-
-  _TextRange? selectionOverlapForRange(int start, int end) {
-    final selection = _normalizedSelection;
-    if (selection == null) {
-      return null;
-    }
-    final overlapStart = math.max(start, selection.start);
-    final overlapEnd = math.min(end, selection.end);
-    if (overlapStart >= overlapEnd) {
-      return null;
-    }
-    return _TextRange(overlapStart, overlapEnd);
   }
 
   _TextRange? get _normalizedSelection {
@@ -571,6 +1145,20 @@ class _LearningTextState {
     }
     return start < selection.end && end > selection.start;
   }
+}
+
+class _LearningTextSegment {
+  final int start;
+  final int end;
+  final _MarkedRange? range;
+  final _MarkerVisual visual;
+
+  const _LearningTextSegment({
+    required this.start,
+    required this.end,
+    required this.range,
+    required this.visual,
+  });
 }
 
 class _MarkerVisual {
@@ -600,9 +1188,7 @@ List<_MarkedRange> _markedRangesForText({
   required int? selectionStart,
   required int? selectionEnd,
 }) {
-  if (result == null) {
-    return const [];
-  }
+  final items = result?.items ?? const <LexicalItemResult>[];
   final hasSelection =
       selectionStart != null &&
       selectionEnd != null &&
@@ -610,8 +1196,13 @@ List<_MarkedRange> _markedRangesForText({
   final start = hasSelection ? math.min(selectionStart, selectionEnd) : -1;
   final end = hasSelection ? math.max(selectionStart, selectionEnd) : -1;
   final ranges = <_MarkedRange>[];
-  for (final item in result.items.where((item) => item.kind == 'phrase')) {
+
+  // 熟語は範囲選択された場合だけ表示する。壊れたoffsetは使用しない。
+  for (final item in items.where((item) => item.kind == 'phrase')) {
     for (final occurrence in item.occurrences) {
+      if (!_isValidTextRange(text, occurrence.start, occurrence.end)) {
+        continue;
+      }
       final isSelected =
           hasSelection && occurrence.start >= start && occurrence.end <= end;
       if (!isSelected) {
@@ -628,42 +1219,11 @@ List<_MarkedRange> _markedRangesForText({
       );
     }
   }
-  for (final item in result.items.where((item) => item.kind == 'word')) {
-    for (final occurrence in item.occurrences) {
-      final overlapsPhrase = ranges.any(
-        (range) =>
-            range.kind == _MarkedRangeKind.phrase &&
-            occurrence.start >= range.start &&
-            occurrence.end <= range.end,
-      );
-      if (overlapsPhrase) {
-        continue;
-      }
-      ranges.add(
-        _MarkedRange(
-          start: occurrence.start,
-          end: occurrence.end,
-          item: item,
-          kind: _MarkedRangeKind.word,
-          isSelected:
-              hasSelection &&
-              occurrence.start >= start &&
-              occurrence.end <= end,
-        ),
-      );
-    }
-  }
+
+  // 英単語範囲は解析結果ではなく、表示している同一テキストの正規表現だけから作る。
+  // これにより a、texts、directions の末尾 s もテキスト表示と原文表示で一致する。
   for (final match in _englishWordPattern.allMatches(text)) {
     if (!_isLikelyEnglishFallbackWord(match)) {
-      continue;
-    }
-    final alreadyMarked = ranges.any(
-      (range) =>
-          range.kind == _MarkedRangeKind.word &&
-          range.start == match.start &&
-          range.end == match.end,
-    );
-    if (alreadyMarked) {
       continue;
     }
     final word = text.substring(match.start, match.end);
@@ -673,16 +1233,13 @@ List<_MarkedRange> _markedRangesForText({
       start: match.start,
       end: match.end,
     );
-    if (item.kind != 'word') {
-      continue;
-    }
-    final overlapsPhrase = ranges.any(
+    final overlapsSelectedPhrase = ranges.any(
       (range) =>
           range.kind == _MarkedRangeKind.phrase &&
           match.start >= range.start &&
           match.end <= range.end,
     );
-    if (overlapsPhrase) {
+    if (overlapsSelectedPhrase) {
       continue;
     }
     ranges.add(
@@ -695,12 +1252,17 @@ List<_MarkedRange> _markedRangesForText({
       ),
     );
   }
+
   ranges.sort((a, b) {
     final startCompare = a.start.compareTo(b.start);
     if (startCompare != 0) return startCompare;
     return b.end.compareTo(a.end);
   });
   return ranges;
+}
+
+bool _isValidTextRange(String text, int start, int end) {
+  return start >= 0 && end > start && end <= text.length;
 }
 
 bool _isLikelyEnglishFallbackWord(RegExpMatch match) {
@@ -720,507 +1282,66 @@ bool _isLikelyEnglishFallbackWord(RegExpMatch match) {
   }.contains(normalized);
 }
 
-class _OriginalSourceLearningView extends ConsumerStatefulWidget {
-  final MaterialItem material;
-  final AsyncValue<ExtractWordsResult>? analysis;
-  final _WordLookupCache lookupCache;
-  final double zoom;
-  final _SidePanelMode? sidePanelMode;
-  final ValueChanged<_SidePanelMode?> onSidePanelModeChanged;
-
-  const _OriginalSourceLearningView({
-    required this.material,
-    required this.analysis,
-    required this.lookupCache,
-    required this.zoom,
-    required this.sidePanelMode,
-    required this.onSidePanelModeChanged,
-  });
-
-  @override
-  ConsumerState<_OriginalSourceLearningView> createState() =>
-      _OriginalSourceLearningViewState();
-}
-
-class _OriginalSourceLearningViewState
-    extends ConsumerState<_OriginalSourceLearningView> {
-  String? _hoveredBoxKey;
-  int? _selectionStart;
-  int? _selectionEnd;
-  int? _dragPageIndex;
-  Offset? _dragStart;
-
-  ExtractWordsResult? get _result =>
-      widget.analysis?.maybeWhen(data: (value) => value, orElse: () => null);
-
-  List<Uint8List> get _pages {
-    if (widget.material.sourceMimeType == 'application/pdf') {
-      return widget.material.sourcePageImages;
-    }
-    final bytes = widget.material.sourceBytes;
-    return bytes == null ? const [] : [bytes];
-  }
-
-  LexicalItemResult _lexicalItemForBox(SourceWordBox box) {
-    final range = _boxTextRange(box);
-    final result = _result;
-    if (range != null && result != null) {
-      return _lexicalItemForWordInResult(
-        _cleanLookupWord(box.text),
-        result,
-        start: range.start,
-        end: range.end,
-      );
-    }
-    return _lexicalItemForWord(box.text, widget.analysis);
-  }
-
-  void _showMeaningPopover(LexicalItemResult item, Offset globalPosition) {
-    final overlay = Overlay.of(context);
-    final screenSize = MediaQuery.sizeOf(context);
-    const width = 340.0;
-    final left = (globalPosition.dx - 28).clamp(
-      12.0,
-      (screenSize.width - width - 12).clamp(12.0, screenSize.width),
-    );
-    final belowTop = globalPosition.dy + 18;
-    const popoverMaxHeight = 460.0;
-    final maxTop = (screenSize.height - popoverMaxHeight - 12).clamp(
-      12.0,
-      screenSize.height,
-    );
-    final top = belowTop > maxTop
-        ? (globalPosition.dy - popoverMaxHeight - 16).clamp(12.0, maxTop)
-        : belowTop;
-
-    late OverlayEntry entry;
-    entry = OverlayEntry(
-      builder: (context) {
-        return Stack(
-          children: [
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: () => entry.remove(),
-              ),
-            ),
-            Positioned(
-              left: left,
-              top: top,
-              width: width,
-              child: _MeaningPopover(
-                item: item,
-                future: widget.lookupCache.lookup(item),
-                userId: ref.read(appSessionProvider).userId,
-                material: widget.material,
-                onAdded: () => ref.read(wordsProvider.notifier).load(isLearned: false),
-                onClose: () => entry.remove(),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-    overlay.insert(entry);
-  }
-
-  int? _textOffsetAtPosition(int pageIndex, Offset position, Size pageSize) {
-    SourceWordBox? nearest;
-    var nearestDistance = double.infinity;
-    Rect? nearestRect;
-    for (final box
-        in widget.material.sourceWordBoxes
-            .where((box) => box.pageIndex == pageIndex)
-            .where((box) => box.start != null && box.end != null)) {
-      final boxRect = Rect.fromLTWH(
-        box.left * pageSize.width,
-        box.top * pageSize.height,
-        box.width * pageSize.width,
-        box.height * pageSize.height,
-      );
-      if (boxRect.inflate(4).contains(position)) {
-        return _offsetWithinBox(box, boxRect, position);
-      }
-      final distance = (boxRect.center - position).distance;
-      if (distance < nearestDistance) {
-        nearest = box;
-        nearestRect = boxRect;
-        nearestDistance = distance;
-      }
-    }
-    if (nearest == null || nearestRect == null) {
-      return null;
-    }
-    return position.dx < nearestRect.center.dx ? nearest.start : nearest.end;
-  }
-
-  int _offsetWithinBox(SourceWordBox box, Rect boxRect, Offset position) {
-    final start = box.start;
-    final end = box.end;
-    if (start == null || end == null || end <= start) {
-      return start ?? 0;
-    }
-    final ratio = ((position.dx - boxRect.left) / boxRect.width).clamp(
-      0.0,
-      1.0,
-    );
-    return start + ((end - start) * ratio).round();
-  }
-
-  void _updateSelectionFromTextOffsets(
-    int pageIndex,
-    Offset start,
-    Offset current,
-    Size pageSize,
-  ) {
-    final startOffset = _textOffsetAtPosition(pageIndex, start, pageSize);
-    final endOffset = _textOffsetAtPosition(pageIndex, current, pageSize);
-    if (startOffset == null || endOffset == null) {
-      setState(() {
-        _selectionStart = null;
-        _selectionEnd = null;
-      });
-      return;
-    }
-    setState(() {
-      _selectionStart = startOffset;
-      _selectionEnd = endOffset;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final pages = _pages;
-    if (pages.isEmpty) {
-      return const Center(child: Text('PDFプレビューを生成できませんでした'));
-    }
-
-    final result = _result;
-    final learningTextState = _LearningTextState(
-      text: widget.material.ocrText,
-      result: result,
-      selectionStart: _selectionStart,
-      selectionEnd: _selectionEnd,
-    );
-    final selectedItems = learningTextState.selectedItems();
-    final panelItems = widget.sidePanelMode == _SidePanelMode.unknown
-        ? (result?.unknownItems ?? const <LexicalItemResult>[])
-        : selectedItems;
-    final preview = DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: ListView.separated(
-          padding: const EdgeInsets.all(12),
-          itemCount: pages.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            final pageBoxes = widget.material.sourceWordBoxes
-                .where((box) => box.pageIndex == index)
-                .toList();
-            return DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: Colors.grey.shade300),
-                boxShadow: const [
-                  BoxShadow(
-                    blurRadius: 8,
-                    color: Color(0x1F000000),
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: _OriginalPreviewPage(
-                imageBytes: pages[index],
-                zoom: widget.zoom,
-                pageIndex: index,
-                boxes: pageBoxes,
-                hoveredBoxKey: _hoveredBoxKey,
-                learningTextState: learningTextState,
-                dragPageIndex: _dragPageIndex,
-                dragStart: _dragStart,
-                lexicalItemForBox: _lexicalItemForBox,
-                onHover: (key) => setState(() => _hoveredBoxKey = key),
-                onClearHover: (key) => setState(() {
-                  if (_hoveredBoxKey == key) {
-                    _hoveredBoxKey = null;
-                  }
-                }),
-                onShowMeaning: _showMeaningPopover,
-                onDragStart: (position, size) {
-                  setState(() {
-                    _dragPageIndex = index;
-                    _dragStart = position;
-                    _selectionStart = null;
-                    _selectionEnd = null;
-                  });
-                  widget.onSidePanelModeChanged(_SidePanelMode.selection);
-                  _updateSelectionFromTextOffsets(
-                    index,
-                    position,
-                    position,
-                    size,
-                  );
-                },
-                onDragUpdate: (position, size) {
-                  final start = _dragStart;
-                  if (_dragPageIndex != index || start == null) return;
-                  _updateSelectionFromTextOffsets(index, start, position, size);
-                },
-                onDragEnd: () => setState(() {
-                  _dragPageIndex = null;
-                  _dragStart = null;
-                }),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-
-    final sidePanel = _SelectionMeaningPanel(
-      title: widget.sidePanelMode == _SidePanelMode.unknown ? '未知語' : '選択範囲',
-      items: panelItems,
-      userId: ref.read(appSessionProvider).userId,
-      material: widget.material,
-      onAdded: () => ref.read(wordsProvider.notifier).load(isLearned: false),
-      onShowDetails: _showMeaningPopover,
-      lookupCache: widget.lookupCache,
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 760) {
-          return Column(
-            children: [
-              Expanded(child: preview),
-              if (panelItems.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                SizedBox(height: 260, child: sidePanel),
-              ],
-            ],
-          );
-        }
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: preview),
-            const SizedBox(width: 20),
-            SizedBox(width: 320, child: sidePanel),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _OriginalPreviewPage extends StatelessWidget {
-  final Uint8List imageBytes;
-  final double zoom;
-  final int pageIndex;
-  final List<SourceWordBox> boxes;
-  final String? hoveredBoxKey;
-  final _LearningTextState learningTextState;
-  final int? dragPageIndex;
-  final Offset? dragStart;
-  final LexicalItemResult Function(SourceWordBox box) lexicalItemForBox;
-  final ValueChanged<String> onHover;
-  final ValueChanged<String> onClearHover;
-  final void Function(LexicalItemResult item, Offset globalPosition)
-  onShowMeaning;
-  final void Function(Offset position, Size size) onDragStart;
-  final void Function(Offset position, Size size) onDragUpdate;
-  final VoidCallback onDragEnd;
-
-  const _OriginalPreviewPage({
-    required this.imageBytes,
-    required this.zoom,
-    required this.pageIndex,
-    required this.boxes,
-    required this.hoveredBoxKey,
-    required this.learningTextState,
-    required this.dragPageIndex,
-    required this.dragStart,
-    required this.lexicalItemForBox,
-    required this.onHover,
-    required this.onClearHover,
-    required this.onShowMeaning,
-    required this.onDragStart,
-    required this.onDragUpdate,
-    required this.onDragEnd,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return FractionallySizedBox(
-      widthFactor: zoom,
-      alignment: Alignment.topLeft,
-      child: Stack(
-        fit: StackFit.passthrough,
-        children: [
-          Image.memory(
-            imageBytes,
-            width: double.infinity,
-            fit: BoxFit.fitWidth,
-          ),
-          Positioned.fill(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final pageSize = Size(
-                  constraints.maxWidth,
-                  constraints.maxHeight,
-                );
-                return GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onPanStart: (details) =>
-                      onDragStart(details.localPosition, pageSize),
-                  onPanUpdate: (details) =>
-                      onDragUpdate(details.localPosition, pageSize),
-                  onPanEnd: (_) => onDragEnd(),
-                  child: Stack(
-                    children: [
-                      for (final box in boxes)
-                        _OriginalWordHotspot(
-                          box: box,
-                          pageSize: pageSize,
-                          isHovered: hoveredBoxKey == _boxKey(box),
-                          learningTextState: learningTextState,
-                          item: lexicalItemForBox(box),
-                          onHover: onHover,
-                          onClearHover: onClearHover,
-                          onShowMeaning: onShowMeaning,
-                        ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _OriginalWordHotspot extends StatelessWidget {
+class _ResolvedSourceBox {
   final SourceWordBox box;
-  final Size pageSize;
-  final bool isHovered;
-  final _LearningTextState learningTextState;
-  final LexicalItemResult item;
-  final ValueChanged<String> onHover;
-  final ValueChanged<String> onClearHover;
-  final void Function(LexicalItemResult item, Offset globalPosition)
-  onShowMeaning;
+  final _TextRange textRange;
 
-  const _OriginalWordHotspot({
-    required this.box,
-    required this.pageSize,
-    required this.isHovered,
-    required this.learningTextState,
-    required this.item,
-    required this.onHover,
-    required this.onClearHover,
-    required this.onShowMeaning,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final key = _boxKey(box);
-    final boxRange = _boxTextRange(box);
-    final visual = boxRange == null
-        ? _MarkerVisual(
-            kind: null,
-            isCompleteSelection: false,
-            isHovered: isHovered,
-            touchesSelection: false,
-          )
-        : learningTextState.markerForRange(
-            boxRange.start,
-            boxRange.end,
-            isHovered: isHovered,
-          );
-    final fullBackgroundColor = visual.backgroundColor;
-    final boxWidth = box.width * pageSize.width;
-    final selectionOverlap = boxRange == null
-        ? null
-        : learningTextState.selectionOverlapForRange(
-            boxRange.start,
-            boxRange.end,
-          );
-    final blueRect =
-        !visual.isCompleteSelection &&
-            boxRange != null &&
-            selectionOverlap != null
-        ? _selectionRectWithinBox(boxRange, selectionOverlap, boxWidth)
-        : null;
-    return Positioned(
-      left: box.left * pageSize.width,
-      top: box.top * pageSize.height,
-      width: box.width * pageSize.width,
-      height: box.height * pageSize.height,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => onHover(key),
-        onExit: (_) => onClearHover(key),
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onDoubleTapDown: (details) =>
-              onShowMeaning(item, details.globalPosition),
-          onLongPressStart: (details) =>
-              onShowMeaning(item, details.globalPosition),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: fullBackgroundColor,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              if (blueRect != null)
-                Positioned(
-                  left: blueRect.left,
-                  top: 0,
-                  width: blueRect.width,
-                  bottom: 0,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: _markerBackgroundColor(
-                        kind: null,
-                        isCompleteSelection: false,
-                        isHovered: false,
-                        touchesSelection: true,
-                      ),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  const _ResolvedSourceBox({required this.box, required this.textRange});
 }
 
-String _boxKey(SourceWordBox box) =>
-    '${box.pageIndex}:${box.left}:${box.top}:${box.width}:${box.height}:${box.text}';
+List<_ResolvedSourceBox> _resolveSourceBoxes(
+  List<SourceWordBox> boxes,
+  String text,
+) {
+  if (boxes.isEmpty || text.isEmpty) {
+    return const [];
+  }
 
-_TextRange? _boxTextRange(SourceWordBox box) {
+  final resolved = <_ResolvedSourceBox>[];
+  for (final box in boxes) {
+    final range = _validatedExplicitSourceRange(box, text);
+    if (range == null) {
+      continue;
+    }
+    resolved.add(_ResolvedSourceBox(box: box, textRange: range));
+  }
+  resolved.sort((a, b) {
+    final pageCompare = a.box.pageIndex.compareTo(b.box.pageIndex);
+    if (pageCompare != 0) {
+      return pageCompare;
+    }
+    return a.textRange.start.compareTo(b.textRange.start);
+  });
+  return resolved;
+}
+
+_TextRange? _validatedExplicitSourceRange(SourceWordBox box, String text) {
   final start = box.start;
   final end = box.end;
-  if (start == null || end == null || end <= start) {
+  if (start == null ||
+      end == null ||
+      start < 0 ||
+      end <= start ||
+      end > text.length) {
     return null;
   }
-  final match = _englishWordPattern.firstMatch(box.text);
-  if (match == null) {
-    return _TextRange(start, end);
+
+  // 原本側で文字位置を検索・推測し直さない。
+  // OCR時に同じ word_boxes から生成された start/end が、
+  // 本文中の同じ文字列を指している場合だけ使用する。
+  final source = _normalizeSourceText(box.text);
+  final target = _normalizeSourceText(text.substring(start, end));
+  if (source.isEmpty || source != target) {
+    return null;
   }
-  return _TextRange(start + match.start, start + match.end);
+  return _TextRange(start, end);
+}
+
+String _normalizeSourceText(String value) {
+  return value
+      .replaceAll('’', "'")
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 }
 
 Rect _selectionRectWithinBox(
@@ -1372,362 +1493,6 @@ class _MetricChip extends StatelessWidget {
       avatar: Icon(icon, size: 16),
       label: Text(label),
       visualDensity: VisualDensity.compact,
-    );
-  }
-}
-
-class _InteractiveTextView extends ConsumerStatefulWidget {
-  final MaterialItem material;
-  final String text;
-  final AsyncValue<ExtractWordsResult>? analysis;
-  final _WordLookupCache lookupCache;
-  final double zoom;
-  final _SidePanelMode? sidePanelMode;
-  final ValueChanged<_SidePanelMode?> onSidePanelModeChanged;
-
-  const _InteractiveTextView({
-    required this.material,
-    required this.text,
-    required this.analysis,
-    required this.lookupCache,
-    required this.zoom,
-    required this.sidePanelMode,
-    required this.onSidePanelModeChanged,
-  });
-
-  @override
-  ConsumerState<_InteractiveTextView> createState() =>
-      _InteractiveTextViewState();
-}
-
-class _InteractiveTextViewState extends ConsumerState<_InteractiveTextView> {
-  final GlobalKey _textKey = GlobalKey();
-  OverlayEntry? _popoverEntry;
-  String? _hoveredRange;
-  TextSelection? _selection;
-  DateTime? _lastPointerDownAt;
-  Offset? _lastPointerDownPosition;
-  DateTime? _suppressSelectionUntil;
-
-  @override
-  void dispose() {
-    _popoverEntry?.remove();
-    super.dispose();
-  }
-
-  void _hideMeaningPopover() {
-    _popoverEntry?.remove();
-    _popoverEntry = null;
-  }
-
-  void _showMeaningPopover(LexicalItemResult item, Offset globalPosition) {
-    _hideMeaningPopover();
-    final overlay = Overlay.of(context);
-    final screenSize = MediaQuery.sizeOf(context);
-    const width = 340.0;
-    final left = (globalPosition.dx - 28).clamp(
-      12.0,
-      (screenSize.width - width - 12).clamp(12.0, screenSize.width),
-    );
-    final belowTop = globalPosition.dy + 18;
-    const popoverMaxHeight = 460.0;
-    final maxTop = (screenSize.height - popoverMaxHeight - 12).clamp(
-      12.0,
-      screenSize.height,
-    );
-    final top = belowTop > maxTop
-        ? (globalPosition.dy - popoverMaxHeight - 16).clamp(12.0, maxTop)
-        : belowTop;
-
-    _popoverEntry = OverlayEntry(
-      builder: (context) {
-        return Stack(
-          children: [
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: _hideMeaningPopover,
-              ),
-            ),
-            Positioned(
-              left: left,
-              top: top,
-              width: width,
-              child: _MeaningPopover(
-                item: item,
-                future: widget.lookupCache.lookup(item),
-                userId: ref.read(appSessionProvider).userId,
-                material: widget.material,
-                onAdded: () => ref.read(wordsProvider.notifier).load(isLearned: false),
-                onClose: _hideMeaningPopover,
-              ),
-            ),
-          ],
-        );
-      },
-    );
-    overlay.insert(_popoverEntry!);
-  }
-
-  LexicalItemResult? _itemForWord(
-    String word,
-    ExtractWordsResult? result,
-    int start,
-    int end,
-  ) {
-    return _lexicalItemForWordInResult(word, result, start: start, end: end);
-  }
-
-  String _rangeKey(int start, int end) => '$start:$end';
-
-  TextStyle? _textStyle(BuildContext context) {
-    final base = Theme.of(context).textTheme.bodyLarge;
-    return base?.copyWith(
-      height: 1.8,
-      fontSize: (base.fontSize ?? 16) * widget.zoom,
-    );
-  }
-
-  List<InlineSpan> _buildSpans(
-    BuildContext context,
-    ExtractWordsResult? result,
-  ) {
-    final baseStyle = _textStyle(context);
-    final spans = <InlineSpan>[];
-    final learningTextState = _LearningTextState(
-      text: widget.text,
-      result: result,
-      selectionStart: _selection?.start,
-      selectionEnd: _selection?.end,
-    );
-    final ranges = learningTextState.ranges;
-    final boundaries = <int>{0, widget.text.length};
-    final selection = _selection;
-    final hasSelection = selection != null && !selection.isCollapsed;
-    final selectionStart = hasSelection
-        ? math.min(selection.start, selection.end)
-        : -1;
-    final selectionEnd = hasSelection
-        ? math.max(selection.start, selection.end)
-        : -1;
-    if (hasSelection) {
-      boundaries
-        ..add(selectionStart)
-        ..add(selectionEnd);
-    }
-    for (final range in ranges) {
-      boundaries
-        ..add(range.start)
-        ..add(range.end);
-    }
-    final sortedBoundaries = boundaries.toList()..sort();
-
-    for (var i = 0; i < sortedBoundaries.length - 1; i++) {
-      final start = sortedBoundaries[i];
-      final end = sortedBoundaries[i + 1];
-      if (start == end) continue;
-      final range = _rangeCoveringSegment(ranges, start, end);
-      final rangeKey = range == null ? null : _rangeKey(range.start, range.end);
-      final isHovered = rangeKey != null && _hoveredRange == rangeKey;
-      final markerColor = learningTextState
-          .markerForRange(start, end, isHovered: isHovered)
-          .backgroundColor;
-      final style = markerColor == null
-          ? baseStyle
-          : baseStyle?.copyWith(backgroundColor: markerColor);
-      spans.add(
-        TextSpan(
-          text: widget.text.substring(start, end),
-          style: style,
-          mouseCursor: range == null ? null : SystemMouseCursors.click,
-          onEnter: rangeKey == null
-              ? null
-              : (_) => setState(() => _hoveredRange = rangeKey),
-          onExit: rangeKey == null
-              ? null
-              : (_) => setState(() {
-                  if (_hoveredRange == rangeKey) {
-                    _hoveredRange = null;
-                  }
-                }),
-        ),
-      );
-    }
-    return [TextSpan(style: baseStyle, children: spans)];
-  }
-
-  LexicalItemResult? _itemAtOffset(
-    Offset localPosition,
-    ExtractWordsResult? result,
-    double maxWidth,
-  ) {
-    if (result == null) {
-      return null;
-    }
-    final painter = TextPainter(
-      text: TextSpan(text: widget.text, style: _textStyle(context)),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      locale: Localizations.maybeLocaleOf(context),
-      textHeightBehavior: DefaultTextStyle.of(context).textHeightBehavior,
-    )..layout(maxWidth: maxWidth);
-    final position = painter.getPositionForOffset(localPosition);
-    final offset = position.offset.clamp(0, widget.text.length);
-    if (offset >= widget.text.length) {
-      return null;
-    }
-    for (final match in _englishWordPattern.allMatches(widget.text)) {
-      if (offset < match.start || offset >= match.end) {
-        continue;
-      }
-      if (!_isLikelyEnglishFallbackWord(match)) {
-        return null;
-      }
-      final word = widget.text.substring(match.start, match.end);
-      final item = _itemForWord(word, result, match.start, match.end);
-      if (item != null) {
-        return item;
-      }
-    }
-    for (final item in result.items.where((item) => item.kind == 'phrase')) {
-      for (final occurrence in item.occurrences) {
-        if (offset >= occurrence.start && offset < occurrence.end) {
-          return item;
-        }
-      }
-    }
-    return null;
-  }
-
-  LexicalItemResult? _itemForHoveredRange(ExtractWordsResult? result) {
-    final hoveredRange = _hoveredRange;
-    if (result == null || hoveredRange == null) {
-      return null;
-    }
-    for (final range in _markedRangesForText(
-      text: widget.text,
-      result: result,
-      selectionStart: _selection?.start,
-      selectionEnd: _selection?.end,
-    )) {
-      if (_rangeKey(range.start, range.end) == hoveredRange) {
-        return range.item;
-      }
-    }
-    return null;
-  }
-
-  void _handlePointerDown(
-    PointerDownEvent event,
-    ExtractWordsResult? result,
-    double maxWidth,
-  ) {
-    final now = DateTime.now();
-    final previousTime = _lastPointerDownAt;
-    final previousPosition = _lastPointerDownPosition;
-    _lastPointerDownAt = now;
-    _lastPointerDownPosition = event.position;
-
-    if (previousTime == null || previousPosition == null) {
-      return;
-    }
-    final isDoubleClick =
-        now.difference(previousTime) <= const Duration(milliseconds: 360) &&
-        (event.position - previousPosition).distance <= 8;
-    if (!isDoubleClick) {
-      return;
-    }
-
-    final renderBox = _textKey.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox == null) {
-      return;
-    }
-    final localPosition = renderBox.globalToLocal(event.position);
-    final item =
-        _itemForHoveredRange(result) ??
-        _itemAtOffset(localPosition, result, maxWidth);
-    if (item != null) {
-      _suppressSelectionUntil = DateTime.now().add(
-        const Duration(milliseconds: 500),
-      );
-      setState(() => _selection = null);
-      _showMeaningPopover(item, event.position);
-    }
-  }
-
-  List<LexicalItemResult> _selectedItems(ExtractWordsResult? result) {
-    final selection = _selection;
-    if (selection == null || selection.isCollapsed) {
-      return const [];
-    }
-    return _itemsFullyContainedInRange(result, selection.start, selection.end);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final result = widget.analysis?.maybeWhen(
-      data: (value) => value,
-      orElse: () => null,
-    );
-    final selectedItems = _selectedItems(result);
-    final panelItems = widget.sidePanelMode == _SidePanelMode.unknown
-        ? (result?.unknownItems ?? const <LexicalItemResult>[])
-        : selectedItems;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final availableTextWidth = constraints.maxWidth < 760
-            ? constraints.maxWidth
-            : constraints.maxWidth - 340;
-        final textView = Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerDown: (event) =>
-              _handlePointerDown(event, result, availableTextWidth),
-          child: SelectableText.rich(
-            TextSpan(children: _buildSpans(context, result)),
-            key: _textKey,
-            onSelectionChanged: (selection, cause) {
-              final suppressUntil = _suppressSelectionUntil;
-              if (suppressUntil != null &&
-                  DateTime.now().isBefore(suppressUntil)) {
-                return;
-              }
-              widget.onSidePanelModeChanged(_SidePanelMode.selection);
-              setState(() => _selection = selection);
-            },
-          ),
-        );
-        final sidePanel = _SelectionMeaningPanel(
-          title: widget.sidePanelMode == _SidePanelMode.unknown
-              ? '未知語'
-              : '選択範囲',
-          items: panelItems,
-          userId: ref.read(appSessionProvider).userId,
-          material: widget.material,
-          onAdded: () => ref.read(wordsProvider.notifier).load(isLearned: false),
-          onShowDetails: _showMeaningPopover,
-          lookupCache: widget.lookupCache,
-        );
-        if (constraints.maxWidth < 760) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              textView,
-              if (panelItems.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                sidePanel,
-              ],
-            ],
-          );
-        }
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: textView),
-            const SizedBox(width: 20),
-            SizedBox(width: 320, child: sidePanel),
-          ],
-        );
-      },
     );
   }
 }
@@ -1896,17 +1661,16 @@ Color? _markerBackgroundColor({
   if (isCompleteSelection && kind == _MarkedRangeKind.word) {
     return Colors.amber.withValues(alpha: 0.36);
   }
-  if (isHovered && kind == _MarkedRangeKind.phrase) {
-    return Colors.lightGreenAccent.withValues(alpha: 0.36);
-  }
-  if (isHovered) {
-    return Colors.amber.withValues(alpha: 0.36);
-  }
   if (touchesSelection) {
     return Colors.lightBlueAccent.withValues(alpha: 0.36);
   }
+  if (isHovered && kind == _MarkedRangeKind.word) {
+    return Colors.amber.withValues(alpha: 0.30);
+  }
   return null;
 }
+
+String _markedRangeKey(int start, int end) => '$start:$end';
 
 class _MarkedRange {
   final int start;

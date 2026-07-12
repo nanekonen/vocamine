@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../providers/words_provider.dart';
 import '../services/app_session.dart';
 import '../services/supabase_auth_service.dart';
 
@@ -15,16 +14,7 @@ class MyPageScreen extends ConsumerStatefulWidget {
 
 class _MyPageScreenState extends ConsumerState<MyPageScreen> {
   @override
-  void initState() {
-    super.initState();
-    Future.microtask(() {
-      ref.read(learnedWordsProvider.notifier).load();
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final learnedState = ref.watch(learnedWordsProvider);
     final session = ref.watch(appSessionProvider);
 
     return Scaffold(
@@ -81,46 +71,14 @@ class _MyPageScreenState extends ConsumerState<MyPageScreen> {
               onTap: () => context.push('/setup'),
             ),
           ),
-          const SizedBox(height: 24),
-
-          // 学習済み単語
-          Text(
-            '学習済みの単語 (${learnedState.maybeWhen(data: (words) => words.length, orElse: () => 0)})',
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          learnedState.when(
-            loading: () => const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(child: CircularProgressIndicator()),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.check_circle_outline),
+              title: const Text('学習済みの単語'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.push('/mypage/learned'),
             ),
-            error: (error, _) => Text('学習済み単語の取得に失敗しました: $error'),
-            data: (learnedWords) {
-              if (learnedWords.isEmpty) {
-                return const Text('まだ学習済みの単語はありません');
-              }
-              return Column(
-                children: learnedWords
-                    .map(
-                      (w) => Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: Card(
-                          child: ListTile(
-                            dense: true,
-                            leading: Icon(
-                              Icons.check_circle_outline,
-                              color: Theme.of(context).colorScheme.primary,
-                              size: 20,
-                            ),
-                            title: Text(w.headword),
-                            subtitle: Text(w.meaningJa),
-                          ),
-                        ),
-                      ),
-                    )
-                    .toList(),
-              );
-            },
           ),
         ],
       ),
@@ -159,7 +117,6 @@ class _MyPageScreenState extends ConsumerState<MyPageScreen> {
       await SupabaseAuthService.auth.signOut();
     }
     await ref.read(appSessionProvider.notifier).signOut();
-    await ref.read(learnedWordsProvider.notifier).load();
     if (mounted) {
       context.go('/login');
     }

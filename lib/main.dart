@@ -13,6 +13,7 @@ import 'screens/auth_callback_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/app_session.dart';
 import 'services/supabase_auth_service.dart';
+import 'screens/learned_words_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -71,7 +72,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/mypage',
         builder: (context, state) => const MyPageScreen(),
       ),
-
+      GoRoute(
+        path: '/mypage/learned',
+        builder: (context, state) => const LearnedWordsScreen(),
+      ),
       // 教材（フォルダ階層あり）
       GoRoute(
         path: '/materials',
