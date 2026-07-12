@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -9,9 +10,9 @@ import '../models/material_item.dart';
 import '../models/folder.dart';
 import '../providers/material_library_provider.dart';
 import '../services/browser_context_menu_lease.dart';
+import '../services/app_session.dart';
 import '../services/vocamine_api_client.dart';
 import '../widgets/square_progress_indicator.dart';
-import '../widgets/academic_item_icon.dart';
 
 class _PendingMaterialImport {
   final String title;
@@ -20,11 +21,43 @@ class _PendingMaterialImport {
   const _PendingMaterialImport({required this.title, required this.folderId});
 }
 
+Set<String> _materialDescendantFolderIds(
+  String folderId,
+  List<AppFolder> folders,
+) {
+  final ids = <String>{folderId};
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (final folder in folders) {
+      if (folder.parentId != null &&
+          ids.contains(folder.parentId) &&
+          ids.add(folder.id)) {
+        changed = true;
+      }
+    }
+  }
+  return ids;
+}
+
+int _materialFolderCount(String folderId, MaterialLibraryState library) {
+  final folderIds = _materialDescendantFolderIds(folderId, library.folders);
+  return library.materials
+      .where((material) => folderIds.contains(material.folderId))
+      .length;
+}
+
 class MaterialsScreen extends ConsumerStatefulWidget {
   final String? folderId;
   final String title;
+  final int importRequest;
 
-  const MaterialsScreen({super.key, this.folderId, this.title = '教材'});
+  const MaterialsScreen({
+    super.key,
+    this.folderId,
+    this.title = '教材',
+    this.importRequest = 0,
+  });
 
   @override
   ConsumerState<MaterialsScreen> createState() => _MaterialsScreenState();
@@ -59,6 +92,16 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     Future.microtask(() {
       ref.read(materialLibraryProvider.notifier).load();
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant MaterialsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.importRequest != oldWidget.importRequest) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showImportMenu(context, ref);
+      });
+    }
   }
 
   @override
@@ -748,12 +791,6 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                     96,
                   ),
                   children: [
-                    _SectionHeader(
-                      icon: Icons.library_books_outlined,
-                      title: 'Materials Repository',
-                      subtitle: '読み込んだ教材',
-                    ),
-                    const SizedBox(height: 32),
                     Wrap(
                       spacing: 24,
                       runSpacing: 24,
@@ -775,6 +812,11 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                               ),
                               onMenuSelected: (action) =>
                                   _handleFolderAction(action, folder),
+                              isFolder: true,
+                              itemCount: _materialFolderCount(
+                                folder.id,
+                                library,
+                              ),
                             ),
                           ),
                         ),
@@ -788,6 +830,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                             ).colorScheme.secondary,
                             onTap: () {},
                             isLoading: true,
+                            itemCount: 0,
                           ),
                         ),
                         ...materials.map(
@@ -816,13 +859,24 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                                     material.id,
                                   )
                                   ? () {}
-                                  : () => context.push(
-                                      '/materials/detail',
-                                      extra: {
-                                        'materialId': material.id,
-                                        'title': material.title,
-                                      },
-                                    ),
+                                  : () {
+                                      final userId = ref
+                                          .read(appSessionProvider)
+                                          .userId;
+                                      unawaited(
+                                        _api.updateRecentMaterial(
+                                          userId: userId,
+                                          materialId: material.id,
+                                        ),
+                                      );
+                                      context.push(
+                                        '/materials/detail',
+                                        extra: {
+                                          'materialId': material.id,
+                                          'title': material.title,
+                                        },
+                                      );
+                                    },
                               onMenuSelected:
                                   library.movingMaterialIds.contains(
                                     material.id,
@@ -847,6 +901,10 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                                   .analyses[material.id]
                                   ?.value
                                   ?.unknownCount,
+                              itemCount: 1,
+                              previewBytes: material.sourcePageImages.isNotEmpty
+                                  ? material.sourcePageImages.first
+                                  : null,
                             ),
                           ),
                         ),
@@ -856,41 +914,6 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                 ),
         ),
       ),
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-
-  const _SectionHeader({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, color: Theme.of(context).colorScheme.secondary),
-        const SizedBox(width: 10),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: Theme.of(context).textTheme.headlineSmall),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-      ],
     );
   }
 }
@@ -906,6 +929,9 @@ class _LibraryTile extends StatelessWidget {
   final bool isLoading;
   final int? coveragePercent;
   final int? unknownCount;
+  final bool isFolder;
+  final int itemCount;
+  final Uint8List? previewBytes;
 
   const _LibraryTile({
     required this.icon,
@@ -918,23 +944,110 @@ class _LibraryTile extends StatelessWidget {
     this.isLoading = false,
     this.coveragePercent,
     this.unknownCount,
+    this.isFolder = false,
+    this.itemCount = 0,
+    this.previewBytes,
   });
 
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final tileWidth = width >= 1180
-        ? 330.0
+        ? 360.0
         : width >= 760
-        ? 300.0
+        ? 330.0
         : width - 48;
+    if (isFolder) {
+      return SizedBox(
+        width: tileWidth,
+        height: 210,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            if (itemCount > 0)
+              Positioned(
+                left: 10,
+                right: 10,
+                top: 8,
+                child: Container(
+                  height: 180,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    border: Border.all(color: const Color(0xFFC4C6CD)),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x180B1C2C),
+                        blurRadius: 20,
+                        offset: Offset(0, 7),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            Positioned.fill(
+              child: PhysicalShape(
+                clipper: const _MaterialFolderClipper(),
+                color: const Color(0xFFD4E3FF),
+                shadowColor: const Color(0x990B1C2C),
+                elevation: 10,
+                child: CustomPaint(
+                  foregroundPainter: const _MaterialFolderOutlinePainter(),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: onTap,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 38, 16, 0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                ),
+                                if (onMenuSelected != null)
+                                  PopupMenuButton<String>(
+                                    tooltip: '教材の操作',
+                                    onSelected: onMenuSelected,
+                                    itemBuilder: _materialMenuItems,
+                                  ),
+                              ],
+                            ),
+                          ),
+                          const Divider(height: 1),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Text(
+                              '$itemCount件の教材',
+                              style: Theme.of(context).textTheme.labelMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return SizedBox(
       width: tileWidth,
       height: 210,
       child: Card(
         color: Colors.white,
-        shadowColor: const Color(0x141A2B3C),
-        elevation: 1,
+        shadowColor: const Color(0x520B1C2C),
+        elevation: 7,
         child: InkWell(
           borderRadius: BorderRadius.zero,
           onTap: onTap,
@@ -946,29 +1059,60 @@ class _LibraryTile extends StatelessWidget {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      width: 52,
-                      height: 60,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF2F4F6),
-                        borderRadius: BorderRadius.zero,
-                        border: Border.all(color: const Color(0xFFDDE3EA)),
-                      ),
-                      child: isLoading
-                          ? Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: accentColor,
+                    SizedBox(
+                      width: 104,
+                      height: 76,
+                      child: Transform.translate(
+                        offset: const Offset(0, -24),
+                        child: OverflowBox(
+                          minWidth: 128,
+                          maxWidth: 128,
+                          minHeight: 210,
+                          maxHeight: 210,
+                          alignment: Alignment.topRight,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF2F4F6),
+                              borderRadius: BorderRadius.zero,
+                              border: Border.all(
+                                color: const Color(0xFFDDE3EA),
                               ),
-                            )
-                          : AcademicItemIcon(
-                              kind: icon == Icons.folder_outlined
-                                  ? AcademicItemIconKind.folder
-                                  : AcademicItemIconKind.material,
-                              color: accentColor,
-                              size: 27,
                             ),
+                            child: isLoading
+                                ? Padding(
+                                    padding: const EdgeInsets.all(14),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: accentColor,
+                                    ),
+                                  )
+                                : previewBytes != null
+                                ? ClipRect(
+                                    child: Transform.scale(
+                                      scale: 1.75,
+                                      alignment: Alignment.topLeft,
+                                      child: Image.memory(
+                                        previewBytes!,
+                                        width: 128,
+                                        height: 210,
+                                        fit: BoxFit.cover,
+                                        alignment: Alignment.topLeft,
+                                      ),
+                                    ),
+                                  )
+                                : const Center(
+                                    child: Text(
+                                      'MATERIAL',
+                                      style: TextStyle(
+                                        letterSpacing: 1.1,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF38485A),
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
@@ -1002,59 +1146,47 @@ class _LibraryTile extends StatelessWidget {
                         iconColor: const Color(0xFF44474C),
                         tooltip: '教材の操作',
                         onSelected: onMenuSelected,
-                        itemBuilder: (context) => [
-                          const PopupMenuItem(
-                            value: 'rename',
-                            child: ListTile(
-                              leading: Icon(Icons.edit_outlined),
-                              title: Text('名前の変更'),
-                            ),
-                          ),
-                          const PopupMenuItem(
-                            value: 'move',
-                            child: ListTile(
-                              leading: Icon(Icons.drive_file_move_outline),
-                              title: Text('移動'),
-                            ),
-                          ),
-                          if (showPageAction)
-                            const PopupMenuItem(
-                              value: 'pages',
-                              child: ListTile(
-                                leading: Icon(Icons.note_add_outlined),
-                                title: Text('ページの追加'),
-                              ),
-                            ),
-                          const PopupMenuDivider(),
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: ListTile(
-                              leading: Icon(Icons.delete_outline),
-                              title: Text('削除'),
-                            ),
-                          ),
-                        ],
+                        itemBuilder: _materialMenuItems,
                       ),
                   ],
                 ),
-                if (coveragePercent != null && unknownCount != null) ...[
-                  const Spacer(),
-                  const Divider(color: Color(0xFFDDE3EA)),
-                  const SizedBox(height: 12),
-                  Row(
+                const Spacer(),
+                const Padding(
+                  padding: EdgeInsets.only(left: 112),
+                  child: Divider(color: Color(0xFFDDE3EA)),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.only(left: 112),
+                  child: Row(
                     children: [
                       SquareProgressIndicator(
-                        value: coveragePercent! / 100,
+                        value: (coveragePercent ?? 0) / 100,
                         size: 64,
                         strokeWidth: 6,
                         color: const Color(0xFF0060AC),
                         backgroundColor: const Color(0xFFDDE3EA),
-                        child: Text(
-                          '$coveragePercent%',
-                          style: const TextStyle(
-                            color: Color(0xFF0060AC),
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
+                        child: Text.rich(
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: coveragePercent == null
+                                    ? '--'
+                                    : '$coveragePercent',
+                                style: const TextStyle(
+                                  color: Color(0xFF0060AC),
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const TextSpan(
+                                text: '%',
+                                style: TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 18,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -1064,12 +1196,15 @@ class _LibraryTile extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Vocabulary Coverage: $coveragePercent%',
-                              style: const TextStyle(color: Color(0xFF041627)),
+                              '習得語彙率: ${coveragePercent ?? '--'}%',
+                              style: const TextStyle(
+                                color: Color(0xFF041627),
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              'Unknown Words: $unknownCount',
+                              '未知語数: ${unknownCount ?? '--'}',
                               style: const TextStyle(color: Color(0xFF44474C)),
                             ),
                           ],
@@ -1077,7 +1212,7 @@ class _LibraryTile extends StatelessWidget {
                       ),
                     ],
                   ),
-                ],
+                ),
               ],
             ),
           ),
@@ -1085,4 +1220,67 @@ class _LibraryTile extends StatelessWidget {
       ),
     );
   }
+
+  List<PopupMenuEntry<String>> _materialMenuItems(BuildContext context) => [
+    const PopupMenuItem(
+      value: 'rename',
+      child: ListTile(leading: Icon(Icons.edit_outlined), title: Text('名前の変更')),
+    ),
+    const PopupMenuItem(
+      value: 'move',
+      child: ListTile(
+        leading: Icon(Icons.drive_file_move_outline),
+        title: Text('移動'),
+      ),
+    ),
+    if (showPageAction)
+      const PopupMenuItem(
+        value: 'pages',
+        child: ListTile(
+          leading: Icon(Icons.note_add_outlined),
+          title: Text('ページの追加'),
+        ),
+      ),
+    const PopupMenuDivider(),
+    const PopupMenuItem(
+      value: 'delete',
+      child: ListTile(leading: Icon(Icons.delete_outline), title: Text('削除')),
+    ),
+  ];
+}
+
+class _MaterialFolderClipper extends CustomClipper<Path> {
+  const _MaterialFolderClipper();
+
+  @override
+  Path getClip(Size size) => Path()
+    ..moveTo(0, 24)
+    ..lineTo(size.width * .38, 24)
+    ..lineTo(size.width * .46, 0)
+    ..lineTo(size.width, 0)
+    ..lineTo(size.width, size.height)
+    ..lineTo(0, size.height)
+    ..close();
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
+}
+
+class _MaterialFolderOutlinePainter extends CustomPainter {
+  const _MaterialFolderOutlinePainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = const _MaterialFolderClipper().getClip(size);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFF68ABFF)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

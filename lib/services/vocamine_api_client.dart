@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
 import '../models/lexical_analysis.dart';
+import '../models/dashboard_summary.dart';
 import '../models/folder.dart';
 import '../models/material_item.dart';
 import '../models/word.dart';
@@ -571,6 +572,32 @@ class VocamineApiClient {
     }
     final json = jsonDecode(response.body) as Map<String, dynamic>;
     return json['level'] as String?;
+  }
+
+  Future<DashboardSummary> fetchDashboard({required String userId}) async {
+    final response = await _client.get(
+      Uri.parse('$baseUrl/users/$userId/dashboard'),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+    return DashboardSummary.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> updateRecentMaterial({
+    required String userId,
+    required String materialId,
+  }) async {
+    final response = await _client.put(
+      Uri.parse('$baseUrl/users/$userId/recent-material'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'material_id': materialId}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
   }
 
   Future<AppSession> resolveAuthSession({required String accessToken}) async {

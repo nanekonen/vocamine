@@ -6,6 +6,7 @@ class Wordbook {
   final String? sourceType;
   final String? sourceMaterialId;
   final String? sourceFolderId;
+  final int wordCount;
 
   const Wordbook({
     required this.id,
@@ -15,6 +16,7 @@ class Wordbook {
     this.sourceType,
     this.sourceMaterialId,
     this.sourceFolderId,
+    this.wordCount = 0,
   });
 
   Wordbook copyWith({
@@ -30,6 +32,7 @@ class Wordbook {
       sourceType: sourceType,
       sourceMaterialId: sourceMaterialId,
       sourceFolderId: sourceFolderId,
+      wordCount: wordCount,
     );
   }
 
@@ -38,6 +41,7 @@ class Wordbook {
       id: json['id'] as String? ?? '',
       name: json['name'] as String? ?? '',
       folderId: json['folder_id'] as String?,
+      wordCount: json['word_count'] as int? ?? 0,
     );
   }
 }

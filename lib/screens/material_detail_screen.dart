@@ -497,6 +497,9 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 52,
+        actionsPadding: MediaQuery.sizeOf(context).width >= 900
+            ? const EdgeInsets.only(right: 356)
+            : EdgeInsets.zero,
         title: Text(widget.title),
         actions: [
           IconButton(
@@ -651,6 +654,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   final GlobalKey _textKey = GlobalKey();
   final ScrollController _textScrollController = ScrollController();
   final ScrollController _sourceScrollController = ScrollController();
+  final ScrollController _sourceHorizontalScrollController = ScrollController();
   final List<GlobalKey> _sourcePageKeys = [];
   final Map<String, GlobalKey> _sourceRangeKeys = {};
   final Map<String, int> _focusedOccurrenceIndexes = {};
@@ -688,6 +692,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     _popoverEntry?.remove();
     _textScrollController.dispose();
     _sourceScrollController.dispose();
+    _sourceHorizontalScrollController.dispose();
     super.dispose();
   }
 
@@ -1156,96 +1161,88 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         .where((resolved) => resolved.box.pageIndex == pageIndex)
         .toList();
 
-    return FractionallySizedBox(
-      widthFactor: widget.zoom,
-      alignment: Alignment.topLeft,
-      child: Stack(
-        fit: StackFit.passthrough,
-        children: [
-          Image.memory(
-            imageBytes,
-            width: double.infinity,
-            fit: BoxFit.fitWidth,
-          ),
-          Positioned.fill(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final pageSize = Size(
-                  constraints.maxWidth,
-                  constraints.maxHeight,
-                );
-                return Listener(
+    return Stack(
+      fit: StackFit.passthrough,
+      children: [
+        Image.memory(imageBytes, width: double.infinity, fit: BoxFit.fitWidth),
+        Positioned.fill(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final pageSize = Size(
+                constraints.maxWidth,
+                constraints.maxHeight,
+              );
+              return Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (_) {
+                  if (_selectionStart != null || _selectionEnd != null) {
+                    _clearSelection();
+                  }
+                },
+                child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
-                  onPointerDown: (_) {
-                    if (_selectionStart != null || _selectionEnd != null) {
-                      _clearSelection();
+                  onTap: _clearSelection,
+                  onPanStart: (details) {
+                    final anchor = _sourceOffsetAt(
+                      pageIndex,
+                      details.localPosition,
+                      pageSize,
+                      sourceBoxes,
+                    );
+                    if (anchor == null) {
+                      return;
                     }
+                    setState(() {
+                      _dragPageIndex = pageIndex;
+                      _dragSelectionAnchor = anchor;
+                      _selectionStart = anchor;
+                      _selectionEnd = anchor;
+                    });
+                    widget.onSidePanelModeChanged(_SidePanelMode.selection);
                   },
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: _clearSelection,
-                    onPanStart: (details) {
-                      final anchor = _sourceOffsetAt(
-                        pageIndex,
-                        details.localPosition,
-                        pageSize,
-                        sourceBoxes,
-                      );
-                      if (anchor == null) {
-                        return;
-                      }
-                      setState(() {
-                        _dragPageIndex = pageIndex;
-                        _dragSelectionAnchor = anchor;
-                        _selectionStart = anchor;
-                        _selectionEnd = anchor;
-                      });
-                      widget.onSidePanelModeChanged(_SidePanelMode.selection);
-                    },
-                    onPanUpdate: (details) {
-                      final anchor = _dragSelectionAnchor;
-                      if (_dragPageIndex != pageIndex || anchor == null) {
-                        return;
-                      }
-                      final current = _sourceOffsetAt(
-                        pageIndex,
-                        details.localPosition,
-                        pageSize,
-                        sourceBoxes,
-                      );
-                      if (current == null) {
-                        return;
-                      }
-                      setState(() {
-                        _selectionStart = anchor;
-                        _selectionEnd = current;
-                      });
-                    },
-                    onPanEnd: (_) {
-                      setState(() {
-                        _dragPageIndex = null;
-                        _dragSelectionAnchor = null;
-                      });
-                    },
-                    onPanCancel: () {
-                      setState(() {
-                        _dragPageIndex = null;
-                        _dragSelectionAnchor = null;
-                      });
-                    },
-                    child: Stack(
-                      children: [
-                        for (final resolved in pageBoxes)
-                          ..._buildSourceSegments(resolved, pageSize, state),
-                      ],
-                    ),
+                  onPanUpdate: (details) {
+                    final anchor = _dragSelectionAnchor;
+                    if (_dragPageIndex != pageIndex || anchor == null) {
+                      return;
+                    }
+                    final current = _sourceOffsetAt(
+                      pageIndex,
+                      details.localPosition,
+                      pageSize,
+                      sourceBoxes,
+                    );
+                    if (current == null) {
+                      return;
+                    }
+                    setState(() {
+                      _selectionStart = anchor;
+                      _selectionEnd = current;
+                    });
+                  },
+                  onPanEnd: (_) {
+                    setState(() {
+                      _dragPageIndex = null;
+                      _dragSelectionAnchor = null;
+                    });
+                  },
+                  onPanCancel: () {
+                    setState(() {
+                      _dragPageIndex = null;
+                      _dragSelectionAnchor = null;
+                    });
+                  },
+                  child: Stack(
+                    children: [
+                      for (final resolved in pageBoxes)
+                        ..._buildSourceSegments(resolved, pageSize, state),
+                    ],
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -1262,46 +1259,66 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       _sourcePageKeys.add(GlobalKey());
     }
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.zero,
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.zero,
-        child: SingleChildScrollView(
-          controller: _sourceScrollController,
-          padding: const EdgeInsets.all(12),
-          primary: false,
-          child: Column(
-            children: [
-              for (var index = 0; index < pages.length; index++) ...[
-                if (index > 0) const SizedBox(height: 12),
-                DecoratedBox(
-                  key: _sourcePageKeys[index],
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: Colors.grey.shade300),
-                    boxShadow: const [
-                      BoxShadow(
-                        blurRadius: 8,
-                        color: Color(0x1F000000),
-                        offset: Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: _buildSourcePage(
-                    pages[index],
-                    index,
-                    state,
-                    sourceBoxes,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scaledWidth = constraints.maxWidth * widget.zoom;
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey.shade300),
+            borderRadius: BorderRadius.zero,
+          ),
+          child: Scrollbar(
+            controller: _sourceHorizontalScrollController,
+            thumbVisibility: widget.zoom > 1,
+            notificationPredicate: (notification) => notification.depth == 0,
+            child: SingleChildScrollView(
+              controller: _sourceHorizontalScrollController,
+              scrollDirection: Axis.horizontal,
+              primary: false,
+              child: SizedBox(
+                width: scaledWidth,
+                height: constraints.maxHeight,
+                child: Scrollbar(
+                  controller: _sourceScrollController,
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    controller: _sourceScrollController,
+                    padding: const EdgeInsets.all(12),
+                    primary: false,
+                    child: Column(
+                      children: [
+                        for (var index = 0; index < pages.length; index++) ...[
+                          if (index > 0) const SizedBox(height: 12),
+                          DecoratedBox(
+                            key: _sourcePageKeys[index],
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              border: Border.all(color: Colors.grey.shade300),
+                              boxShadow: const [
+                                BoxShadow(
+                                  blurRadius: 8,
+                                  color: Color(0x1F000000),
+                                  offset: Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: _buildSourcePage(
+                              pages[index],
+                              index,
+                              state,
+                              sourceBoxes,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 ),
-              ],
-            ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -1393,11 +1410,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
             ? _buildSourceContent(state)
             : _buildTextContent(state, contentWidth);
         final content = showSource
-            ? Scrollbar(
-                controller: _sourceScrollController,
-                thumbVisibility: true,
-                child: rawContent,
-              )
+            ? rawContent
             : Scrollbar(
                 controller: _textScrollController,
                 thumbVisibility: true,
@@ -1921,11 +1934,22 @@ class _AnalysisHeader extends StatelessWidget {
                     strokeWidth: 6,
                     color: theme.colorScheme.secondary,
                     backgroundColor: const Color(0xFFDDE3EA),
-                    child: Text(
-                      '$percent%',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: theme.colorScheme.secondary,
-                        fontWeight: FontWeight.w800,
+                    child: Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text: '$percent',
+                            style: TextStyle(
+                              color: theme.colorScheme.secondary,
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const TextSpan(
+                            text: '%',
+                            style: TextStyle(color: Colors.black, fontSize: 14),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -1946,8 +1970,8 @@ class _AnalysisHeader extends StatelessWidget {
                             _AnalysisFilterButton(
                               onPressed: () => onShowItems(_SidePanelMode.all),
                               icon: Icons.format_list_bulleted,
-                              backgroundColor: const Color(0xFFECEEF0),
-                              foregroundColor: const Color(0xFF1A2B3C),
+                              backgroundColor: const Color(0xFFD4E3FF),
+                              foregroundColor: const Color(0xFF004883),
                               label: Text('全体 ${result.totalWords}'),
                             ),
                             _AnalysisFilterButton(
@@ -1960,8 +1984,8 @@ class _AnalysisHeader extends StatelessWidget {
                             ),
                             _AnalysisFilterButton(
                               icon: Icons.radio_button_unchecked,
-                              backgroundColor: const Color(0xFFFFE16D),
-                              foregroundColor: const Color(0xFF544600),
+                              backgroundColor: const Color(0xFFD4E3FF),
+                              foregroundColor: const Color(0xFF004883),
                               label: Text('未知 ${result.unknownCount}'),
                               onPressed: () =>
                                   onShowItems(_SidePanelMode.unknown),
@@ -2199,7 +2223,7 @@ Color? _markerBackgroundColor({
   required bool touchesSelection,
 }) {
   if (isCompleteSelection && kind == _MarkedRangeKind.phrase) {
-    return const Color(0xFF68ABFF).withValues(alpha: 0.32);
+    return const Color(0xFF86C77A).withValues(alpha: 0.48);
   }
   if (isCompleteSelection && kind == _MarkedRangeKind.word) {
     return const Color(0xFFFFE16D).withValues(alpha: 0.62);

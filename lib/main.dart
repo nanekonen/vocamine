@@ -151,6 +151,7 @@ class _VocamineAppState extends ConsumerState<VocamineApp> {
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
       title: 'Vocamine',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: const ColorScheme.light(
           primary: Color(0xFF041627),
@@ -317,7 +318,7 @@ class _VocamineAppState extends ConsumerState<VocamineApp> {
           ),
         ),
         navigationBarTheme: const NavigationBarThemeData(
-          backgroundColor: Colors.white,
+          backgroundColor: Color(0xFFF2F4F6),
           indicatorColor: Color(0xFFFFE16D),
           elevation: 0,
           height: 72,
