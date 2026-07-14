@@ -261,6 +261,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
         extraction.text,
         sourceBytes: bytes,
         sourceMimeType: image.mimeType ?? _mimeTypeForName(filename),
+        sourcePageImages: [bytes],
         sourceWordBoxes: extraction.wordBoxes,
         folderId: widget.folderId,
         analyzeImmediately: true,
@@ -904,11 +905,13 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                                   subtitle: 'フォルダ',
                                   accentColor: const Color(0xFFC9A900),
                                   onTap: () => context.push(
-                                    '/materials/folder',
-                                    extra: {
-                                      'folderId': folder.id,
-                                      'title': folder.name,
-                                    },
+                                    Uri(
+                                      path: '/materials/folder',
+                                      queryParameters: {
+                                        'folderId': folder.id,
+                                        'title': folder.name,
+                                      },
+                                    ).toString(),
                                   ),
                                   onMenuSelected: (action) =>
                                       _handleFolderAction(action, folder),
@@ -958,11 +961,13 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                                             ),
                                           );
                                           context.push(
-                                            '/materials/detail',
-                                            extra: {
-                                              'materialId': material.id,
-                                              'title': material.title,
-                                            },
+                                            Uri(
+                                              path: '/materials/detail',
+                                              queryParameters: {
+                                                'materialId': material.id,
+                                                'title': material.title,
+                                              },
+                                            ).toString(),
                                           );
                                         },
                                   onMenuSelected:
@@ -981,17 +986,23 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
                                   coveragePercent:
                                       library.analyses[material.id]?.value ==
                                           null
-                                      ? null
+                                      ? material.analysisCoverageRate == null
+                                            ? null
+                                            : (material.analysisCoverageRate! *
+                                                      100)
+                                                  .round()
                                       : (library
                                                     .analyses[material.id]!
                                                     .value!
                                                     .coverageRate *
                                                 100)
                                             .round(),
-                                  unknownCount: library
-                                      .analyses[material.id]
-                                      ?.value
-                                      ?.unknownCount,
+                                  unknownCount:
+                                      library
+                                          .analyses[material.id]
+                                          ?.value
+                                          ?.unknownCount ??
+                                      material.analysisUnknownCount,
                                   itemCount: 1,
                                   previewBytes:
                                       material.sourcePageImages.isNotEmpty

@@ -52,7 +52,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     if (userId.isEmpty || userId == 'guest') return;
     if (mounted) setState(() => _loading = true);
     try {
-      await ref.read(materialLibraryProvider.notifier).load();
+      await ref.read(materialLibraryProvider.notifier).load(force: true);
       final summary = await _api.fetchDashboard(userId: userId);
       if (!mounted) return;
       setState(() {
@@ -135,11 +135,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       material: recentMaterial,
                       analysis: library.analyses[recentMaterial.id]?.value,
                       onTap: () => context.push(
-                        '/materials/detail',
-                        extra: {
-                          'materialId': recentMaterial!.id,
-                          'title': recentMaterial.title,
-                        },
+                        Uri(
+                          path: '/materials/detail',
+                          queryParameters: {
+                            'materialId': recentMaterial!.id,
+                            'title': recentMaterial.title,
+                          },
+                        ).toString(),
                       ),
                     ),
                 ],
@@ -316,9 +318,11 @@ class _RecentMaterialCard extends StatelessWidget {
     final preview = material.sourcePageImages.isEmpty
         ? null
         : material.sourcePageImages.first;
-    final coverage = analysis == null
+    final coverage = analysis != null
+        ? (analysis!.coverageRate * 100).round()
+        : material.analysisCoverageRate == null
         ? null
-        : (analysis!.coverageRate * 100).round();
+        : (material.analysisCoverageRate! * 100).round();
     final decoration = BoxDecoration(
       color: Colors.white,
       border: Border.all(color: const Color(0xFFD2D8DE)),

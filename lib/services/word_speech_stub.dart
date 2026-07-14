@@ -1,22 +1,19 @@
-import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/services.dart';
 
 import '../models/word.dart';
-import 'vocamine_api_client.dart';
 
 class WordSpeech {
-  final AudioPlayer _player = AudioPlayer();
+  static const _channel = MethodChannel('glossalyze/text_to_speech');
 
   Future<void> speak(Word word) async {
-    await _player.stop();
-    final uri = Uri.parse('${VocamineApiClient.baseUrl}/words/pronunciation')
-        .replace(
-          queryParameters: {
-            'word': word.headword,
-            if (word.ipa?.trim().isNotEmpty == true) 'ipa': word.ipa!,
-          },
-        );
-    await _player.play(UrlSource(uri.toString()));
+    final text = word.headword.trim();
+    if (text.isEmpty) return;
+    await _channel.invokeMethod<void>('speak', {
+      'text': text,
+      'language': 'en-US',
+      'rate': 0.9,
+    });
   }
 
-  Future<void> stop() => _player.stop();
+  Future<void> stop() => _channel.invokeMethod<void>('stop');
 }

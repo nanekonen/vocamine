@@ -62,7 +62,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           email: email,
           password: password,
           data: {'display_name': _usernameController.text.trim()},
-          emailRedirectTo: '${Uri.base.origin}/auth/callback',
+          emailRedirectTo: SupabaseAuthService.authRedirectUrl,
         );
         final accessToken = response.session?.accessToken;
         if (accessToken == null || accessToken.isEmpty) {
@@ -85,6 +85,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       }
     } on AuthException catch (error) {
       if (!mounted) return;
+      if (!_isSignUp &&
+          error.message.toLowerCase().contains('invalid login credentials')) {
+        _showMessage('Googleアカウントでログインします');
+        final launched = await _launchGoogleLogin(
+          emailHint: _emailController.text.trim(),
+        );
+        if (!launched && mounted) {
+          _showMessage('Googleログインを開けませんでした');
+        }
+        return;
+      }
       _showMessage(_authErrorMessage(error));
     } catch (error) {
       if (!mounted) return;
@@ -102,11 +113,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
     setState(() => _isLoading = true);
     try {
-      final launched = await SupabaseAuthService.auth.signInWithOAuth(
-        OAuthProvider.google,
-        redirectTo: '${Uri.base.origin}/auth/callback',
-        queryParams: const {'prompt': 'select_account'},
-      );
+      final launched = await _launchGoogleLogin();
       if (!launched && mounted) {
         _showMessage('Googleログインを開けませんでした');
       }
@@ -115,6 +122,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<bool> _launchGoogleLogin({String? emailHint}) {
+    return SupabaseAuthService.auth.signInWithOAuth(
+      OAuthProvider.google,
+      redirectTo: SupabaseAuthService.authRedirectUrl,
+      queryParams: {
+        'prompt': 'select_account',
+        if (emailHint?.isNotEmpty == true) 'login_hint': emailHint!,
+      },
+    );
   }
 
   void _showMessage(String message) {
@@ -126,7 +144,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String _authErrorMessage(AuthException error) {
     final message = error.message.toLowerCase();
     if (message.contains('invalid login credentials')) {
-      return 'メールアドレスまたはパスワードが正しくありません';
+      return 'メールアドレスとパスワードが一致しません。'
+          'Googleで作成したアカウントにはパスワードが設定されていない場合があります';
     }
     if (message.contains('email not confirmed')) {
       return 'メールアドレスの確認が完了していません';

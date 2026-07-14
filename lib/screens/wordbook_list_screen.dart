@@ -537,20 +537,24 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
                                 }
                                 if (book.sourceFolderId != null) {
                                   context.push(
-                                    '/wordbook/folder',
-                                    extra: {
-                                      'folderId': book.sourceFolderId,
-                                      'title': book.name,
-                                    },
+                                    Uri(
+                                      path: '/wordbook/folder',
+                                      queryParameters: {
+                                        'folderId': book.sourceFolderId!,
+                                        'title': book.name,
+                                      },
+                                    ).toString(),
                                   );
                                   return;
                                 }
                                 context.push(
-                                  '/wordbook/detail',
-                                  extra: {
-                                    'wordbookId': book.id,
-                                    'title': book.name,
-                                  },
+                                  Uri(
+                                    path: '/wordbook/detail',
+                                    queryParameters: {
+                                      'wordbookId': book.id,
+                                      'title': book.name,
+                                    },
+                                  ).toString(),
                                 );
                               },
                               onMenuSelected:

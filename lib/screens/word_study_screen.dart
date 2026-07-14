@@ -6,6 +6,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../models/word.dart';
+import '../services/app_messenger.dart';
 import '../services/vocamine_api_client.dart';
 import '../services/word_speech.dart';
 import '../utils/part_of_speech_label.dart';
@@ -38,7 +39,11 @@ class WordSpeaker {
   final WordSpeech _speech = WordSpeech();
 
   Future<void> speak(Word word) async {
-    await _speech.speak(word);
+    try {
+      await _speech.speak(word);
+    } catch (error) {
+      AppMessenger.show('読み上げに失敗しました: $error');
+    }
   }
 }
 

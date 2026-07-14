@@ -6,6 +6,7 @@ import '../models/word.dart';
 import '../models/word_lookup.dart';
 import '../providers/material_library_provider.dart';
 import '../providers/words_provider.dart';
+import '../services/app_messenger.dart';
 import '../services/app_session.dart';
 import '../services/vocamine_api_client.dart';
 import '../utils/part_of_speech_label.dart';
@@ -37,6 +38,12 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
       TextEditingController(text: '0');
   bool _sortByOccurrence = false;
   bool _occurrenceDescending = true;
+
+  bool _requireOccurrenceMaterials() {
+    if (_selectedMaterialIds.isNotEmpty) return true;
+    AppMessenger.show('集計対象の教材を選択してください');
+    return false;
+  }
 
   String _normalizeWord(String value) =>
       value.trim().toLowerCase().replaceAll('’', "'");
@@ -171,6 +178,12 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
       ),
     );
     if (changed == true) _loadWords();
+  }
+
+  void _openWordDetails(Word word) {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => WordDetailScreen(word: word)));
   }
 
   String? get _independentWordbookId {
@@ -390,22 +403,36 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                           suffixText: '回以上',
                           isDense: true,
                         ),
-                        onChanged: (value) => setState(
-                          () => _minimumOccurrenceCount =
-                              int.tryParse(value) ?? 0,
-                        ),
+                        onChanged: (value) {
+                          final count = int.tryParse(value) ?? 0;
+                          if (count > 0 && !_requireOccurrenceMaterials()) {
+                            _minimumOccurrenceController.value =
+                                const TextEditingValue(
+                                  text: '0',
+                                  selection: TextSelection.collapsed(offset: 1),
+                                );
+                            return;
+                          }
+                          setState(() => _minimumOccurrenceCount = count);
+                        },
                       ),
                     ),
                     PopupMenuButton<String>(
                       tooltip: '並び替え',
-                      onSelected: (value) => setState(() {
-                        if (value == 'default') {
-                          _sortByOccurrence = false;
-                        } else {
-                          _sortByOccurrence = true;
-                          _occurrenceDescending = value == 'desc';
+                      onSelected: (value) {
+                        if (value != 'default' &&
+                            !_requireOccurrenceMaterials()) {
+                          return;
                         }
-                      }),
+                        setState(() {
+                          if (value == 'default') {
+                            _sortByOccurrence = false;
+                          } else {
+                            _sortByOccurrence = true;
+                            _occurrenceDescending = value == 'desc';
+                          }
+                        });
+                      },
                       itemBuilder: (_) => const [
                         PopupMenuItem(value: 'default', child: Text('登録順')),
                         PopupMenuItem(value: 'desc', child: Text('出現回数が多い順')),
@@ -473,12 +500,13 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                       final word = filtered[index];
                       return Card(
                         clipBehavior: Clip.antiAlias,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
+                        child: InkWell(
+                          onTap: () => _openWordDetails(word),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final details = Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
@@ -534,32 +562,42 @@ class _WordbookScreenState extends ConsumerState<WordbookScreen> {
                                       ),
                                     ],
                                   ],
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: '詳細',
-                                onPressed: () => Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        WordDetailScreen(word: word),
+                                );
+                                final learnedButton = OutlinedButton.icon(
+                                  onPressed: () {
+                                    ref
+                                        .read(wordsProvider.notifier)
+                                        .toggleLearned(word.id);
+                                  },
+                                  icon: const Icon(
+                                    Icons.check_circle_outline,
+                                    size: 18,
                                   ),
-                                ),
-                                icon: const Icon(Icons.chevron_right),
-                              ),
-                              const SizedBox(width: 12),
-                              OutlinedButton.icon(
-                                onPressed: () {
-                                  ref
-                                      .read(wordsProvider.notifier)
-                                      .toggleLearned(word.id);
-                                },
-                                icon: const Icon(
-                                  Icons.check_circle_outline,
-                                  size: 18,
-                                ),
-                                label: const Text('覚えた'),
-                              ),
-                            ],
+                                  label: const Text('覚えた'),
+                                );
+                                if (constraints.maxWidth < 560) {
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      details,
+                                      const SizedBox(height: 12),
+                                      Align(
+                                        alignment: Alignment.centerRight,
+                                        child: learnedButton,
+                                      ),
+                                    ],
+                                  );
+                                }
+                                return Row(
+                                  children: [
+                                    Expanded(child: details),
+                                    const SizedBox(width: 12),
+                                    learnedButton,
+                                  ],
+                                );
+                              },
+                            ),
                           ),
                         ),
                       );

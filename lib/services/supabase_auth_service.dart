@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SupabaseAuthService {
@@ -11,14 +12,18 @@ class SupabaseAuthService {
 
   static bool get isConfigured => supabasePublishableKey.trim().isNotEmpty;
 
+  static String get authRedirectUrl => kIsWeb
+      ? '${Uri.base.origin}/auth/callback'
+      : 'com.example.vacamine://login-callback/';
+
   static Future<void> initialize() async {
     if (!isConfigured) return;
     await Supabase.initialize(
       url: supabaseUrl,
       publishableKey: supabasePublishableKey,
-      authOptions: const FlutterAuthClientOptions(
+      authOptions: FlutterAuthClientOptions(
         authFlowType: AuthFlowType.pkce,
-        detectSessionInUri: true,
+        detectSessionInUri: kIsWeb,
       ),
     );
   }

@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import UIKit
 import VisionKit
@@ -7,7 +8,9 @@ import VisionKit
   VNDocumentCameraViewControllerDelegate
 {
   private var scannerChannel: FlutterMethodChannel?
+  private var speechChannel: FlutterMethodChannel?
   private var pendingScanResult: FlutterResult?
+  private let speechSynthesizer = AVSpeechSynthesizer()
 
   override func application(
     _ application: UIApplication,
@@ -34,6 +37,52 @@ import VisionKit
       }
       self?.startDocumentScan(result: result)
     }
+
+    let speechChannel = FlutterMethodChannel(
+      name: "glossalyze/text_to_speech",
+      binaryMessenger: registrar.messenger())
+    self.speechChannel = speechChannel
+    speechChannel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(
+          FlutterError(
+            code: "tts_unavailable",
+            message: "読み上げ機能を初期化できませんでした",
+            details: nil))
+        return
+      }
+      switch call.method {
+      case "speak":
+        guard
+          let arguments = call.arguments as? [String: Any],
+          let text = arguments["text"] as? String,
+          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+          result(nil)
+          return
+        }
+        self.speak(text: text)
+        result(nil)
+      case "stop":
+        self.speechSynthesizer.stopSpeaking(at: .immediate)
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func speak(text: String) {
+    let session = AVAudioSession.sharedInstance()
+    try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+    try? session.setActive(true, options: .notifyOthersOnDeactivation)
+    speechSynthesizer.stopSpeaking(at: .immediate)
+    let utterance = AVSpeechUtterance(string: text)
+    utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+    utterance.rate = 0.48
+    utterance.pitchMultiplier = 1.0
+    utterance.volume = 1.0
+    speechSynthesizer.speak(utterance)
   }
 
   private func startDocumentScan(result: @escaping FlutterResult) {

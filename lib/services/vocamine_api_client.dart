@@ -174,12 +174,16 @@ class VocamineApiClient {
   }
 
   Future<List<WordLookupResult>> fetchStoredMeanings(
-    List<LexicalItemResult> items,
-  ) async {
+    List<LexicalItemResult> items, {
+    required String userId,
+    bool enrichMissing = false,
+  }) async {
     final response = await _client.post(
       Uri.parse('$baseUrl/words/stored-meanings'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
+        'user_id': userId,
+        'enrich_missing': enrichMissing,
         'items': items
             .map(
               (item) => {
@@ -641,6 +645,17 @@ class VocamineApiClient {
     return (folders: folders, materials: materials);
   }
 
+  Future<void> refreshMaterialAnalyses({required String userId}) async {
+    final response = await _client.post(
+      Uri.parse(
+        '$baseUrl/materials/refresh-analysis',
+      ).replace(queryParameters: {'user_id': userId}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractErrorMessage(response));
+    }
+  }
+
   Future<void> deleteMaterial({
     required String userId,
     required String materialId,
@@ -813,6 +828,12 @@ class VocamineApiClient {
       sourceObjectStorageKey: saved.sourceObjectStorageKey,
       readablePdfObjectStorageKey: saved.readablePdfObjectStorageKey,
       thumbnailObjectStorageKey: saved.thumbnailObjectStorageKey,
+      analysisTotalWords: saved.analysisTotalWords,
+      analysisKnownCount: saved.analysisKnownCount,
+      analysisUnknownCount: saved.analysisUnknownCount,
+      analysisUntranslatedCount: saved.analysisUntranslatedCount,
+      analysisCoverageRate: saved.analysisCoverageRate,
+      analysisUpdatedAt: saved.analysisUpdatedAt,
       createdAt: saved.createdAt,
     );
   }

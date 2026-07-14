@@ -40,15 +40,18 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
   final _api = VocamineApiClient();
   bool _loaded = false;
   String? _loadedUserId;
+  bool _analysisBackfillAttempted = false;
 
   @override
   MaterialLibraryState build() {
-    final session = ref.watch(appSessionProvider);
-    if (_loadedUserId != null && _loadedUserId != session.userId) {
+    ref.listen<AppSession>(appSessionProvider, (previous, next) {
+      if (previous == null || previous.userId == next.userId) return;
       _loaded = false;
       _loadedUserId = null;
-      return const MaterialLibraryState(folders: [], materials: []);
-    }
+      _analysisBackfillAttempted = false;
+      state = const MaterialLibraryState(folders: [], materials: []);
+      if (next.isLoggedIn) unawaited(load());
+    });
     return const MaterialLibraryState(folders: [], materials: []);
   }
 
@@ -64,7 +67,19 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
     }
 
     try {
-      final library = await _api.fetchMaterialLibrary(userId: userId);
+      var library = await _api.fetchMaterialLibrary(userId: userId);
+      if (!_analysisBackfillAttempted &&
+          library.materials.any(
+            (material) => material.analysisCoverageRate == null,
+          )) {
+        _analysisBackfillAttempted = true;
+        try {
+          await _api.refreshMaterialAnalyses(userId: userId);
+          library = await _api.fetchMaterialLibrary(userId: userId);
+        } catch (_) {
+          // DBマイグレーション適用前でも教材一覧自体は表示する。
+        }
+      }
 
       state = state.copyWith(
         folders: library.folders,
@@ -73,11 +88,6 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
 
       _loadedUserId = userId;
       _loaded = true; // 成功したときだけtrue
-      for (final material in library.materials) {
-        if (material.ocrText.trim().isNotEmpty) {
-          unawaited(analyzeMaterial(material.id));
-        }
-      }
     } catch (_) {
       _loaded = false; // 念のため明示
     }
@@ -192,27 +202,51 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
       return;
     }
 
-    state = state.copyWith(
-      analyses: {...state.analyses, materialId: const AsyncValue.loading()},
-    );
+    // 既に解析結果を表示できている場合、強制再解析中もその結果を残す。
+    // 「知っている」などの操作後に右側の意味一覧全体がローディングへ
+    // 切り替わるのを防ぎ、完了した結果だけを差し替える。
+    if (existing is! AsyncData<ExtractWordsResult>) {
+      state = state.copyWith(
+        analyses: {...state.analyses, materialId: const AsyncValue.loading()},
+      );
+    }
 
     try {
       final result = await _api.extractWords(
         text: analysisText,
         userId: userId ?? ref.read(appSessionProvider).userId,
         enrichMeanings: false,
-        backgroundEnrichMeanings: true,
+        // 意味生成は教材詳細の「意味を生成中」リクエストに一本化する。
+        // ここでも開始すると同じ教材の生成が二重になり、画面側がロック待ちになる。
+        backgroundEnrichMeanings: false,
       );
       state = state.copyWith(
         analyses: {...state.analyses, materialId: AsyncValue.data(result)},
+        materials: [
+          for (final item in state.materials)
+            if (item.id == materialId)
+              item.copyWith(
+                analysisTotalWords: result.totalWords,
+                analysisKnownCount: result.knownCount,
+                analysisUnknownCount: result.unknownCount,
+                analysisCoverageRate: result.coverageRate,
+                analysisUpdatedAt: DateTime.now(),
+              )
+            else
+              item,
+        ],
       );
     } catch (error, stackTrace) {
-      state = state.copyWith(
-        analyses: {
-          ...state.analyses,
-          materialId: AsyncValue.error(error, stackTrace),
-        },
-      );
+      // バックグラウンド再解析の失敗で、表示できていた解析結果まで
+      // エラー表示に置き換えない。
+      if (existing is! AsyncData<ExtractWordsResult>) {
+        state = state.copyWith(
+          analyses: {
+            ...state.analyses,
+            materialId: AsyncValue.error(error, stackTrace),
+          },
+        );
+      }
     }
   }
 

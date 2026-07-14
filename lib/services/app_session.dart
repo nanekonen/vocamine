@@ -66,7 +66,7 @@ class AppSessionNotifier extends Notifier<AppSession> {
     } else {
       await prefs.setString(_emailKey, email);
     }
-    state = AppSession(
+    final next = AppSession(
       userId: userId,
       email: email,
       username: username ?? state.username,
@@ -74,6 +74,14 @@ class AppSessionNotifier extends Notifier<AppSession> {
       isLoaded: true,
       setupCompleted: setupCompleted,
     );
+    final unchanged =
+        state.userId == next.userId &&
+        state.email == next.email &&
+        state.username == next.username &&
+        state.level == next.level &&
+        state.isLoaded == next.isLoaded &&
+        state.setupCompleted == next.setupCompleted;
+    if (!unchanged) state = next;
   }
 
   Future<void> markSetupCompleted({String? level}) async {

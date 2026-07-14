@@ -61,6 +61,12 @@ class MaterialItem {
   final String? sourceObjectStorageKey;
   final String? readablePdfObjectStorageKey;
   final String? thumbnailObjectStorageKey;
+  final int? analysisTotalWords;
+  final int? analysisKnownCount;
+  final int? analysisUnknownCount;
+  final int? analysisUntranslatedCount;
+  final double? analysisCoverageRate;
+  final DateTime? analysisUpdatedAt;
   final DateTime createdAt;
 
   const MaterialItem({
@@ -76,6 +82,12 @@ class MaterialItem {
     this.sourceObjectStorageKey,
     this.readablePdfObjectStorageKey,
     this.thumbnailObjectStorageKey,
+    this.analysisTotalWords,
+    this.analysisKnownCount,
+    this.analysisUnknownCount,
+    this.analysisUntranslatedCount,
+    this.analysisCoverageRate,
+    this.analysisUpdatedAt,
     required this.createdAt,
   });
 
@@ -89,6 +101,12 @@ class MaterialItem {
     String? sourceMimeType,
     List<Uint8List>? sourcePageImages,
     List<SourceWordBox>? sourceWordBoxes,
+    int? analysisTotalWords,
+    int? analysisKnownCount,
+    int? analysisUnknownCount,
+    int? analysisUntranslatedCount,
+    double? analysisCoverageRate,
+    DateTime? analysisUpdatedAt,
   }) {
     return MaterialItem(
       id: id,
@@ -103,11 +121,19 @@ class MaterialItem {
       sourceObjectStorageKey: sourceObjectStorageKey,
       readablePdfObjectStorageKey: readablePdfObjectStorageKey,
       thumbnailObjectStorageKey: thumbnailObjectStorageKey,
+      analysisTotalWords: analysisTotalWords ?? this.analysisTotalWords,
+      analysisKnownCount: analysisKnownCount ?? this.analysisKnownCount,
+      analysisUnknownCount: analysisUnknownCount ?? this.analysisUnknownCount,
+      analysisUntranslatedCount:
+          analysisUntranslatedCount ?? this.analysisUntranslatedCount,
+      analysisCoverageRate: analysisCoverageRate ?? this.analysisCoverageRate,
+      analysisUpdatedAt: analysisUpdatedAt ?? this.analysisUpdatedAt,
       createdAt: createdAt,
     );
   }
 
   factory MaterialItem.fromJson(Map<String, dynamic> json) {
+    final analysis = json['analysis_summary'] as Map<String, dynamic>?;
     return MaterialItem(
       id: json['id'] as String? ?? '',
       title: json['title'] as String? ?? '',
@@ -132,6 +158,14 @@ class MaterialItem {
           json['readable_pdf_object_storage_key'] as String?,
       thumbnailObjectStorageKey:
           json['thumbnail_object_storage_key'] as String?,
+      analysisTotalWords: analysis?['total_words'] as int?,
+      analysisKnownCount: analysis?['known_count'] as int?,
+      analysisUnknownCount: analysis?['unknown_count'] as int?,
+      analysisUntranslatedCount: analysis?['untranslated_count'] as int?,
+      analysisCoverageRate: (analysis?['coverage_rate'] as num?)?.toDouble(),
+      analysisUpdatedAt: DateTime.tryParse(
+        analysis?['updated_at'] as String? ?? '',
+      ),
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ??
           DateTime.now(),

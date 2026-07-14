@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/lexical_analysis.dart';
@@ -250,19 +252,52 @@ Future<T?> _showAnchoredPanel<T>(
 
 class _WordLookupCache {
   final Map<String, WordLookupResult> _results = {};
+  Future<void>? _storedLoading;
   Future<void>? _loading;
+  int revision = 0;
 
   String _normalizedWord(String value) =>
       value.trim().toLowerCase().replaceAll('’', "'");
 
-  Future<void> loadStoredMeanings(Iterable<LexicalItemResult> items) {
-    return _loading ??= _loadStoredMeanings(items);
+  Future<void> loadStoredMeanings(
+    Iterable<LexicalItemResult> items, {
+    required String userId,
+    VoidCallback? onStoredLoaded,
+  }) {
+    final current = _loading;
+    if (current != null) return current;
+
+    final itemList = items.toList();
+    final storedLoading = _fetchAndReplace(
+      itemList,
+      userId: userId,
+      enrichMissing: false,
+    );
+    _storedLoading = storedLoading;
+    final loading = _finishInitialLoad(
+      itemList,
+      storedLoading,
+      userId,
+      onStoredLoaded,
+    );
+    _loading = loading;
+    return loading;
   }
 
-  Future<void> reloadStoredMeanings(Iterable<LexicalItemResult> items) {
+  Future<void> reloadStoredMeanings(
+    Iterable<LexicalItemResult> items, {
+    required String userId,
+  }) {
     _results.clear();
     _loading = null;
-    return loadStoredMeanings(items);
+    final loading = _fetchAndReplace(
+      items.toList(),
+      userId: userId,
+      enrichMissing: false,
+    );
+    _storedLoading = loading;
+    _loading = loading;
+    return loading;
   }
 
   Set<int> get missingJapaneseMeaningIds => _results.values
@@ -272,19 +307,78 @@ class _WordLookupCache {
       .where((id) => id > 0)
       .toSet();
 
-  Future<void> _loadStoredMeanings(Iterable<LexicalItemResult> items) async {
-    final itemList = items.toList();
-    final results = await VocamineApiClient().fetchStoredMeanings(itemList);
+  bool hasJapaneseMeaningFor(LexicalItemResult item) {
+    final result = _results[_normalizedWord(item.text)];
+    if (result == null) return false;
+    return result.meanings.any(
+      (meaning) =>
+          _meaningMatchesItemPartOfSpeech(
+            item.partOfSpeech,
+            meaning.partOfSpeech,
+          ) &&
+          _hasJapaneseDefinition(meaning),
+    );
+  }
+
+  bool hasStoredResultFor(LexicalItemResult item) =>
+      _results.containsKey(_normalizedWord(item.text));
+
+  bool matchesSearch(LexicalItemResult item, String query) {
+    final normalizedQuery = query.trim().toLowerCase();
+    if (normalizedQuery.isEmpty) return true;
+    final result = _results[_normalizedWord(item.text)];
+    final values = <String>[
+      item.text,
+      item.partOfSpeech,
+      if (item.partOfSpeechDetail != null) item.partOfSpeechDetail!,
+      ...item.surfaceForms,
+      if (result != null)
+        for (final meaning in result.meanings) ...[
+          meaning.definitionEn ?? '',
+          meaning.definitionJa ?? '',
+        ],
+    ];
+    return values.any((value) => value.toLowerCase().contains(normalizedQuery));
+  }
+
+  Future<void> _finishInitialLoad(
+    List<LexicalItemResult> itemList,
+    Future<void> storedLoading,
+    String userId,
+    VoidCallback? onStoredLoaded,
+  ) async {
+    // 既存語を押したときはこの時点までだけ待つ。後続のGemini全件生成を
+    // 待機先に含めない。
+    await storedLoading;
+    onStoredLoaded?.call();
+    await _fetchAndReplace(itemList, userId: userId, enrichMissing: true);
+  }
+
+  Future<void> _fetchAndReplace(
+    List<LexicalItemResult> itemList, {
+    required String userId,
+    required bool enrichMissing,
+  }) async {
+    final results = await VocamineApiClient().fetchStoredMeanings(
+      itemList,
+      userId: userId,
+      enrichMissing: enrichMissing,
+    );
+    _replaceResults(results);
+  }
+
+  void _replaceResults(Iterable<WordLookupResult> results) {
     for (final result in results) {
       _results[_normalizedWord(result.word)] = result;
     }
+    revision++;
   }
 
   Future<WordLookupResult> cachedLookup(LexicalItemResult item) {
     final key = _normalizedWord(item.text);
     final cached = _results[key];
     if (cached != null) return SynchronousFuture(cached);
-    final loading = _loading;
+    final loading = _storedLoading ?? _loading;
     if (loading != null) {
       return loading.then(
         (_) =>
@@ -300,30 +394,37 @@ class _WordLookupCache {
   }
 }
 
-LexicalItemResult _fallbackLexicalItem(String word) {
-  final cleaned = _cleanLookupWord(word);
-  return LexicalItemResult(
-    text: cleaned.toLowerCase().replaceAll('’', "'"),
-    partOfSpeech: '',
-    partOfSpeechDetail: null,
-    surfaceForms: [cleaned.toLowerCase().replaceAll('’', "'")],
-    occurrences: const [],
-    kind: 'word',
-    isLearned: false,
-    hasMeaning: false,
-  );
-}
-
 bool _hasJapaneseDefinition(MeaningInfo meaning) =>
     meaning.definitionJa?.trim().isNotEmpty == true;
 
-String _normalizeLookupWord(String word) {
-  return word.toLowerCase().replaceAll('’', "'");
+bool _meaningMatchesItemPartOfSpeech(
+  String itemPartOfSpeech,
+  String meaningPartOfSpeech,
+) {
+  final itemPos = itemPartOfSpeech.trim().toLowerCase();
+  final meaningPos = meaningPartOfSpeech.trim().toLowerCase();
+  if (itemPos == meaningPos) return true;
+  return switch (itemPos) {
+    'article' => meaningPos == 'determiner',
+    'noun' => const {'pronoun', 'abbreviation'}.contains(meaningPos),
+    'verb' => meaningPos == 'auxiliary',
+    'adjective' => meaningPos == 'determiner',
+    'determiner' => const {
+      'article',
+      'pronoun',
+      'adjective',
+      'numeral',
+    }.contains(meaningPos),
+    'pronoun' => const {'noun', 'determiner'}.contains(meaningPos),
+    'auxiliary' => meaningPos == 'verb',
+    'numeral' => meaningPos == 'determiner',
+    'abbreviation' => meaningPos == 'noun',
+    _ => false,
+  };
 }
 
-String _cleanLookupWord(String word) {
-  final match = _englishWordPattern.firstMatch(word);
-  return match?.group(0) ?? word.trim();
+String _normalizeLookupWord(String word) {
+  return word.toLowerCase().replaceAll('’', "'");
 }
 
 int _compareMeaningForContext(
@@ -389,10 +490,13 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
   _MaterialDisplayMode _displayMode = _MaterialDisplayMode.original;
   _SidePanelMode? _sidePanelMode;
   double _zoom = 1.0;
+  bool _mobileAppBarCollapsed = false;
   final _lookupCache = _WordLookupCache();
   final Set<String> _autoAnalysisRequested = {};
   bool _registeredMeaningsRequested = false;
   bool _storedMeaningsRequested = false;
+  bool _generatingMeanings = false;
+  bool _meaningGenerationFailed = false;
   bool _regeneratingJapanese = false;
   List<LexicalItemResult> _materialItems = const [];
 
@@ -402,7 +506,10 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
     setState(() => _regeneratingJapanese = true);
     try {
       final updated = await VocamineApiClient().regenerateMissingJapanese(ids);
-      await _lookupCache.reloadStoredMeanings(_materialItems);
+      await _lookupCache.reloadStoredMeanings(
+        _materialItems,
+        userId: ref.read(appSessionProvider).userId,
+      );
       AppMessenger.show('$updated件の日本語訳を再生成しました');
       if (!mounted) return;
       setState(() {});
@@ -418,6 +525,7 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
     super.initState();
     Future.microtask(() {
       if (!mounted) return;
+      ref.read(materialLibraryProvider.notifier).load();
       ref.read(wordbookLibraryProvider.notifier).load();
     });
   }
@@ -451,12 +559,23 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(materialLibraryProvider);
-    final material = library.materials.firstWhere(
-      (m) => m.id == widget.materialId,
-    );
+    MaterialItem? material;
+    for (final item in library.materials) {
+      if (item.id == widget.materialId) {
+        material = item;
+        break;
+      }
+    }
+    if (material == null) {
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.title)),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    final resolvedMaterial = material;
     if (!_registeredMeaningsRequested) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _loadRegisteredMeanings(material);
+        if (mounted) _loadRegisteredMeanings(resolvedMaterial);
       });
     }
     _preloadMaterialDefaultWordbook(
@@ -477,118 +596,378 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
         _materialItems = result.items;
         if (_storedMeaningsRequested) return;
         _storedMeaningsRequested = true;
+        _generatingMeanings = true;
+        _meaningGenerationFailed = false;
         _lookupCache
-            .loadStoredMeanings(result.items)
+            .loadStoredMeanings(
+              result.items,
+              userId: ref.read(appSessionProvider).userId,
+              onStoredLoaded: () {
+                if (mounted) setState(() {});
+              },
+            )
             .then((_) {
-              if (mounted) setState(() {});
+              if (mounted) {
+                setState(() => _generatingMeanings = false);
+              }
             })
             .catchError((_) {
-              _storedMeaningsRequested = false;
+              if (mounted) {
+                setState(() {
+                  _generatingMeanings = false;
+                  _meaningGenerationFailed = true;
+                });
+              }
             });
       },
     );
     final hasSource = canDisplayOriginalSource(material);
     final effectiveMode = hasSource ? _displayMode : _MaterialDisplayMode.text;
+    final isNarrow = MediaQuery.sizeOf(context).width < 760;
+    final appBarCollapsed = isNarrow && _mobileAppBarCollapsed;
 
     return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 52,
-        actionsPadding: MediaQuery.sizeOf(context).width >= 900
-            ? const EdgeInsets.only(right: 356)
-            : EdgeInsets.zero,
-        title: Text(widget.title),
-        actions: [
-          IconButton(
-            tooltip: 'オリジナル',
-            onPressed: hasSource
-                ? () => setState(
-                    () => _displayMode = _MaterialDisplayMode.original,
-                  )
-                : null,
-            icon: Icon(
-              Icons.description_outlined,
-              color: effectiveMode == _MaterialDisplayMode.original
-                  ? Theme.of(context).colorScheme.secondary
-                  : null,
-            ),
-          ),
-          IconButton(
-            tooltip: 'テキスト',
-            onPressed: () =>
-                setState(() => _displayMode = _MaterialDisplayMode.text),
-            icon: Icon(
-              Icons.text_fields,
-              color: effectiveMode == _MaterialDisplayMode.text
-                  ? Theme.of(context).colorScheme.secondary
-                  : null,
-            ),
-          ),
-          const VerticalDivider(indent: 10, endIndent: 10),
-          _ToolbarIconButton(
-            tooltip: '縮小',
-            onPressed: _zoom <= 0.75
-                ? null
-                : () => setState(() => _zoom -= 0.1),
-            icon: Icons.zoom_out,
-          ),
-          Tooltip(
-            message: '表示倍率を100%に戻す',
-            child: InkWell(
-              onTap: _zoom == 1.0 ? null : () => setState(() => _zoom = 1.0),
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: Text(
-                    '${(_zoom * 100).round()}%',
-                    style: Theme.of(context).textTheme.labelSmall,
+      appBar: appBarCollapsed
+          ? null
+          : AppBar(
+              toolbarHeight: 52,
+              actionsPadding: MediaQuery.sizeOf(context).width >= 900
+                  ? const EdgeInsets.only(right: 356)
+                  : EdgeInsets.zero,
+              title: Text(material.title),
+              actions: [
+                if (isNarrow)
+                  IconButton(
+                    tooltip: '操作バーと進捗を折りたたむ',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () =>
+                        setState(() => _mobileAppBarCollapsed = true),
+                    icon: const Icon(Icons.keyboard_arrow_up, size: 20),
                   ),
+                if (isNarrow) ...[
+                  IconButton(
+                    tooltip: 'オリジナル',
+                    onPressed: hasSource
+                        ? () => setState(
+                            () => _displayMode = _MaterialDisplayMode.original,
+                          )
+                        : null,
+                    icon: Icon(
+                      Icons.description_outlined,
+                      color: effectiveMode == _MaterialDisplayMode.original
+                          ? Theme.of(context).colorScheme.secondary
+                          : null,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'テキスト',
+                    onPressed: () => setState(
+                      () => _displayMode = _MaterialDisplayMode.text,
+                    ),
+                    icon: Icon(
+                      Icons.text_fields,
+                      color: effectiveMode == _MaterialDisplayMode.text
+                          ? Theme.of(context).colorScheme.secondary
+                          : null,
+                    ),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '表示設定',
+                    onSelected: (action) {
+                      switch (action) {
+                        case 'zoom_out':
+                          setState(
+                            () => _zoom = (_zoom - 0.1).clamp(0.75, 3.0),
+                          );
+                          return;
+                        case 'zoom_reset':
+                          setState(() => _zoom = 1.0);
+                          return;
+                        case 'zoom_in':
+                          setState(
+                            () => _zoom = (_zoom + 0.1).clamp(0.75, 3.0),
+                          );
+                          return;
+                        case 'regenerate':
+                          _regenerateMissingJapanese();
+                          return;
+                        case 'reanalyze':
+                          ref
+                              .read(materialLibraryProvider.notifier)
+                              .analyzeMaterial(widget.materialId, force: true);
+                          return;
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: 'zoom_out',
+                        enabled: _zoom > 0.75,
+                        child: const ListTile(
+                          dense: true,
+                          leading: Icon(Icons.zoom_out),
+                          title: Text('縮小'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'zoom_reset',
+                        child: ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.center_focus_strong),
+                          title: Text('100%に戻す（${(_zoom * 100).round()}%）'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'zoom_in',
+                        enabled: _zoom < 3.0,
+                        child: const ListTile(
+                          dense: true,
+                          leading: Icon(Icons.zoom_in),
+                          title: Text('拡大'),
+                        ),
+                      ),
+                      if (_lookupCache.missingJapaneseMeaningIds.isNotEmpty)
+                        const PopupMenuItem(
+                          value: 'regenerate',
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.auto_fix_high),
+                            title: Text('日本語訳を再生成'),
+                          ),
+                        ),
+                      const PopupMenuItem(
+                        value: 'reanalyze',
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(Icons.refresh),
+                          title: Text('再解析'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (!isNarrow) ...[
+                  IconButton(
+                    tooltip: 'オリジナル',
+                    onPressed: hasSource
+                        ? () => setState(
+                            () => _displayMode = _MaterialDisplayMode.original,
+                          )
+                        : null,
+                    icon: Icon(
+                      Icons.description_outlined,
+                      color: effectiveMode == _MaterialDisplayMode.original
+                          ? Theme.of(context).colorScheme.secondary
+                          : null,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'テキスト',
+                    onPressed: () => setState(
+                      () => _displayMode = _MaterialDisplayMode.text,
+                    ),
+                    icon: Icon(
+                      Icons.text_fields,
+                      color: effectiveMode == _MaterialDisplayMode.text
+                          ? Theme.of(context).colorScheme.secondary
+                          : null,
+                    ),
+                  ),
+                  const VerticalDivider(indent: 10, endIndent: 10),
+                  _ToolbarIconButton(
+                    tooltip: '縮小',
+                    onPressed: _zoom <= 0.75
+                        ? null
+                        : () => setState(() => _zoom -= 0.1),
+                    icon: Icons.zoom_out,
+                  ),
+                  Tooltip(
+                    message: '表示倍率を100%に戻す',
+                    child: InkWell(
+                      onTap: _zoom == 1.0
+                          ? null
+                          : () => setState(() => _zoom = 1.0),
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: Text(
+                            '${(_zoom * 100).round()}%',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  _ToolbarIconButton(
+                    tooltip: '拡大',
+                    onPressed: _zoom >= 3.0
+                        ? null
+                        : () => setState(
+                            () => _zoom = (_zoom + 0.1).clamp(0.75, 3.0),
+                          ),
+                    icon: Icons.zoom_in,
+                  ),
+                  if (_lookupCache.missingJapaneseMeaningIds.isNotEmpty)
+                    IconButton(
+                      tooltip:
+                          '日本語訳がない${_lookupCache.missingJapaneseMeaningIds.length}件を再生成',
+                      onPressed: _regeneratingJapanese
+                          ? null
+                          : _regenerateMissingJapanese,
+                      icon: _regeneratingJapanese
+                          ? const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.auto_fix_high),
+                    ),
+                  IconButton(
+                    tooltip: '再解析',
+                    onPressed: () => ref
+                        .read(materialLibraryProvider.notifier)
+                        .analyzeMaterial(widget.materialId, force: true),
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ],
+            ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: ColoredBox(
+              color: const Color(0xFFF7F9FB),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: _MaterialContentView(
+                  material: material,
+                  mode: effectiveMode,
+                  analysis: analysis,
+                  lookupCache: _lookupCache,
+                  zoom: _zoom,
+                  onZoomChanged: (zoom) => setState(() => _zoom = zoom),
+                  mobileAppBarCollapsed: appBarCollapsed,
+                  sidePanelMode: _sidePanelMode,
+                  onSidePanelModeChanged: (mode) =>
+                      setState(() => _sidePanelMode = mode),
                 ),
               ),
             ),
           ),
-          _ToolbarIconButton(
-            tooltip: '拡大',
-            onPressed: _zoom >= 2.0 ? null : () => setState(() => _zoom += 0.1),
-            icon: Icons.zoom_in,
-          ),
-          if (_lookupCache.missingJapaneseMeaningIds.isNotEmpty)
-            IconButton(
-              tooltip:
-                  '日本語訳がない${_lookupCache.missingJapaneseMeaningIds.length}件を再生成',
-              onPressed: _regeneratingJapanese
-                  ? null
-                  : _regenerateMissingJapanese,
-              icon: _regeneratingJapanese
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.auto_fix_high),
+          if (appBarCollapsed) ...[
+            Positioned(
+              top: MediaQuery.paddingOf(context).top + 4,
+              left: 4,
+              width: 40,
+              height: 40,
+              child: _CollapsedAppBarButton(
+                tooltip: '戻る',
+                icon: Icons.arrow_back,
+                onPressed: () => Navigator.of(context).maybePop(),
+              ),
             ),
-          IconButton(
-            tooltip: '再解析',
-            onPressed: () => ref
-                .read(materialLibraryProvider.notifier)
-                .analyzeMaterial(widget.materialId, force: true),
-            icon: const Icon(Icons.refresh),
-          ),
+            Positioned(
+              top: MediaQuery.paddingOf(context).top + 4,
+              right: 4,
+              width: 40,
+              height: 40,
+              child: _CollapsedAppBarButton(
+                tooltip: '操作バーを表示',
+                icon: Icons.keyboard_arrow_down,
+                onPressed: () => setState(() => _mobileAppBarCollapsed = false),
+              ),
+            ),
+          ],
+          if (_generatingMeanings)
+            Positioned(
+              top: appBarCollapsed ? MediaQuery.paddingOf(context).top + 50 : 8,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: Center(
+                  child: Material(
+                    color: Theme.of(context).colorScheme.surface,
+                    elevation: 3,
+                    borderRadius: BorderRadius.circular(18),
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 9),
+                          Text('意味を生成中'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (_meaningGenerationFailed)
+            Positioned(
+              top: appBarCollapsed ? MediaQuery.paddingOf(context).top + 50 : 8,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Material(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  elevation: 3,
+                  borderRadius: BorderRadius.circular(18),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 4, 6, 4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('意味の生成に失敗しました'),
+                        TextButton(
+                          onPressed: () {
+                            setState(() {
+                              _storedMeaningsRequested = false;
+                              _meaningGenerationFailed = false;
+                            });
+                          },
+                          child: const Text('再試行'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
-      body: ColoredBox(
-        color: const Color(0xFFF7F9FB),
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: _MaterialContentView(
-            material: material,
-            mode: effectiveMode,
-            analysis: analysis,
-            lookupCache: _lookupCache,
-            zoom: _zoom,
-            sidePanelMode: _sidePanelMode,
-            onSidePanelModeChanged: (mode) =>
-                setState(() => _sidePanelMode = mode),
-          ),
-        ),
+    );
+  }
+}
+
+class _CollapsedAppBarButton extends StatelessWidget {
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  const _CollapsedAppBarButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.92),
+      elevation: 2,
+      borderRadius: BorderRadius.circular(20),
+      child: IconButton(
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        onPressed: onPressed,
+        icon: Icon(icon, size: 20),
       ),
     );
   }
@@ -628,6 +1007,8 @@ class _MaterialContentView extends ConsumerStatefulWidget {
   final AsyncValue<ExtractWordsResult>? analysis;
   final _WordLookupCache lookupCache;
   final double zoom;
+  final ValueChanged<double> onZoomChanged;
+  final bool mobileAppBarCollapsed;
   final _SidePanelMode? sidePanelMode;
   final ValueChanged<_SidePanelMode?> onSidePanelModeChanged;
 
@@ -637,6 +1018,8 @@ class _MaterialContentView extends ConsumerStatefulWidget {
     required this.analysis,
     required this.lookupCache,
     required this.zoom,
+    required this.onZoomChanged,
+    required this.mobileAppBarCollapsed,
     required this.sidePanelMode,
     required this.onSidePanelModeChanged,
   });
@@ -648,6 +1031,7 @@ class _MaterialContentView extends ConsumerStatefulWidget {
 
 class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   final GlobalKey _textKey = GlobalKey();
+  final GlobalKey _zoomViewportKey = GlobalKey();
   final ScrollController _textScrollController = ScrollController();
   final ScrollController _sourceScrollController = ScrollController();
   final ScrollController _sourceHorizontalScrollController = ScrollController();
@@ -659,8 +1043,27 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   String? _hoveredRangeKey;
   int? _selectionStart;
   int? _selectionEnd;
-  int? _dragPageIndex;
-  int? _dragSelectionAnchor;
+  int? _longPressWordStart;
+  int? _longPressWordEnd;
+  Offset? _longPressStartPosition;
+  bool _longPressRangeSelection = false;
+  Timer? _textLongPressTimer;
+  int? _textTouchPointer;
+  Offset? _textTouchStartLocal;
+  Offset? _textTouchStartGlobal;
+  bool _textLongPressActive = false;
+  int? _mouseSelectionPointer;
+  int? _mouseSelectionPage;
+  int? _mouseSelectionAnchor;
+  Offset? _mouseSelectionStartPosition;
+  final Map<int, Offset> _sourceTouchPositions = {};
+  double? _pinchStartDistance;
+  double? _pinchStartZoom;
+  Offset? _pinchFocalPoint;
+  double? _pinchContentX;
+  double? _pinchContentY;
+  bool _mobileOverviewCollapsed = false;
+  double _mobilePanelHeight = 260;
   DateTime? _lastPointerDownAt;
   Offset? _lastPointerDownPosition;
   DateTime? _suppressSelectionUntil;
@@ -686,6 +1089,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   @override
   void dispose() {
     _popoverEntry?.remove();
+    _textLongPressTimer?.cancel();
     _textScrollController.dispose();
     _sourceScrollController.dispose();
     _sourceHorizontalScrollController.dispose();
@@ -882,21 +1286,33 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   }
 
   void _clearSelection() {
-    if (_selectionStart == null &&
-        _selectionEnd == null &&
-        _dragPageIndex == null &&
-        _dragSelectionAnchor == null) {
+    if (_selectionStart == null && _selectionEnd == null) {
       return;
     }
     setState(() {
       _selectionStart = null;
       _selectionEnd = null;
-      _dragPageIndex = null;
-      _dragSelectionAnchor = null;
     });
     if (widget.sidePanelMode == _SidePanelMode.selection) {
       widget.onSidePanelModeChanged(null);
     }
+  }
+
+  String get _selectedText {
+    final start = _selectionStart;
+    final end = _selectionEnd;
+    final text = widget.material.ocrText;
+    if (start == null || end == null || start == end || text.isEmpty) return '';
+    final lower = math.min(start, end).clamp(0, text.length);
+    final upper = math.max(start, end).clamp(0, text.length);
+    return text.substring(lower, upper).trim();
+  }
+
+  Future<void> _copySelection() async {
+    final text = _selectedText;
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    AppMessenger.show('選択範囲をコピーしました');
   }
 
   TextStyle? _textStyle(BuildContext context) {
@@ -917,8 +1333,8 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       hoveredRangeKey: _hoveredRangeKey,
     )) {
       final range = segment.range;
-      final rangeKey = range?.kind == _MarkedRangeKind.word
-          ? _markedRangeKey(range!.start, range!.end)
+      final rangeKey = range != null && range.kind == _MarkedRangeKind.word
+          ? _markedRangeKey(range.start, range.end)
           : null;
       final color = segment.visual.backgroundColor;
       spans.add(
@@ -961,6 +1377,130 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         .toInt();
     if (offset >= text.length) return null;
     return _learningTextState.wordRangeAtOffset(offset)?.item;
+  }
+
+  int? _textOffsetAtPosition(Offset localPosition, double maxWidth) {
+    final text = widget.material.ocrText;
+    if (text.isEmpty) return null;
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: _textStyle(context)),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      locale: Localizations.maybeLocaleOf(context),
+      textHeightBehavior: DefaultTextStyle.of(context).textHeightBehavior,
+    )..layout(maxWidth: maxWidth);
+    return painter
+        .getPositionForOffset(localPosition)
+        .offset
+        .clamp(0, text.length)
+        .toInt();
+  }
+
+  _MarkedRange? _wordRangeAtTextPosition(
+    Offset localPosition,
+    double maxWidth,
+  ) {
+    final text = widget.material.ocrText;
+    final offset = _textOffsetAtPosition(localPosition, maxWidth);
+    if (offset == null || text.isEmpty) return null;
+    final safeOffset = math.min(offset, text.length - 1);
+    return _learningTextState.wordRangeAtOffset(safeOffset) ??
+        (safeOffset > 0
+            ? _learningTextState.wordRangeAtOffset(safeOffset - 1)
+            : null);
+  }
+
+  void _selectWholeWord(_MarkedRange range) {
+    setState(() {
+      _selectionStart = range.start;
+      _selectionEnd = range.end;
+      _longPressWordStart = range.start;
+      _longPressWordEnd = range.end;
+      _longPressRangeSelection = false;
+    });
+  }
+
+  void _extendLongPressSelection(int currentOffset) {
+    final wordStart = _longPressWordStart;
+    final wordEnd = _longPressWordEnd;
+    if (wordStart == null || wordEnd == null) return;
+    setState(() {
+      _selectionStart = math.min(currentOffset, wordStart);
+      _selectionEnd = math.max(currentOffset, wordEnd);
+      _longPressRangeSelection = true;
+    });
+    widget.onSidePanelModeChanged(_SidePanelMode.selection);
+  }
+
+  bool _isTouchPointer(PointerEvent event) =>
+      event.kind == PointerDeviceKind.touch ||
+      event.kind == PointerDeviceKind.stylus ||
+      event.kind == PointerDeviceKind.invertedStylus;
+
+  void _handleTextTouchDown(PointerDownEvent event, double maxWidth) {
+    _handleSourcePointerDown(event);
+    _handleTextPointerDown(event, maxWidth);
+    if (!_isTouchPointer(event) || _textTouchPointer != null) return;
+    _textTouchPointer = event.pointer;
+    _textTouchStartLocal = event.localPosition;
+    _textTouchStartGlobal = event.position;
+    _textLongPressActive = false;
+    _textLongPressTimer?.cancel();
+    _textLongPressTimer = Timer(const Duration(milliseconds: 500), () {
+      if (!mounted || _textTouchPointer != event.pointer) return;
+      final local = _textTouchStartLocal;
+      final global = _textTouchStartGlobal;
+      if (local == null || global == null) return;
+      final textBox = _textKey.currentContext?.findRenderObject() as RenderBox?;
+      final range = _wordRangeAtTextPosition(
+        local,
+        textBox?.size.width ?? maxWidth,
+      );
+      if (range == null) return;
+      _textLongPressActive = true;
+      _longPressStartPosition = global;
+      _suppressSelectionUntil = DateTime.now().add(const Duration(seconds: 2));
+      _selectWholeWord(range);
+      _showMeaningPopover(range.item, global, focusOccurrence: false);
+    });
+  }
+
+  void _handleTextTouchMove(PointerMoveEvent event, double maxWidth) {
+    _handleSourcePointerMove(event);
+    if (_textTouchPointer != event.pointer) return;
+    final start = _textTouchStartGlobal;
+    if (start == null) return;
+    final distance = (event.position - start).distance;
+    if (!_textLongPressActive) {
+      if (distance > 10) _textLongPressTimer?.cancel();
+      return;
+    }
+    if (distance <= 6) return;
+    if (!_longPressRangeSelection) _hideMeaningPopover();
+    final textBox = _textKey.currentContext?.findRenderObject() as RenderBox?;
+    if (textBox == null) return;
+    final offset = _textOffsetAtPosition(
+      textBox.globalToLocal(event.position),
+      textBox.size.width,
+    );
+    if (offset != null) _extendLongPressSelection(offset);
+  }
+
+  void _finishTextTouch(PointerEvent event) {
+    _handleSourcePointerEnd(event);
+    if (_textTouchPointer != event.pointer) return;
+    _textLongPressTimer?.cancel();
+    _textTouchPointer = null;
+    _textTouchStartLocal = null;
+    _textTouchStartGlobal = null;
+    _textLongPressActive = false;
+    _longPressWordStart = null;
+    _longPressWordEnd = null;
+    _longPressStartPosition = null;
+    _longPressRangeSelection = false;
+    _suppressSelectionUntil = DateTime.now().add(
+      const Duration(milliseconds: 250),
+    );
   }
 
   void _handleTextPointerDown(PointerDownEvent event, double maxWidth) {
@@ -1049,6 +1589,127 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     );
   }
 
+  int? _nearestSourceOffsetAt(
+    int pageIndex,
+    Offset position,
+    Size pageSize,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    final direct = _sourceOffsetAt(pageIndex, position, pageSize, sourceBoxes);
+    if (direct != null) return direct;
+    _ResolvedSourceBox? nearest;
+    Rect? nearestRect;
+    var nearestDistance = double.infinity;
+    for (final resolved in sourceBoxes.where(
+      (resolved) => resolved.box.pageIndex == pageIndex,
+    )) {
+      final box = resolved.box;
+      final rect = Rect.fromLTWH(
+        box.left * pageSize.width,
+        box.top * pageSize.height,
+        box.width * pageSize.width,
+        box.height * pageSize.height,
+      );
+      final dx = position.dx < rect.left
+          ? rect.left - position.dx
+          : position.dx > rect.right
+          ? position.dx - rect.right
+          : 0.0;
+      final dy = position.dy < rect.top
+          ? rect.top - position.dy
+          : position.dy > rect.bottom
+          ? position.dy - rect.bottom
+          : 0.0;
+      final distance = dx * dx + dy * dy;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = resolved;
+        nearestRect = rect;
+      }
+    }
+    if (nearest == null || nearestRect == null) return null;
+    return _offsetWithinSourceRange(nearestRect, position, (
+      start: nearest.textRange.start,
+      end: nearest.textRange.end,
+    ));
+  }
+
+  _MarkedRange? _sourceWordRangeAt(
+    int pageIndex,
+    Offset position,
+    Size pageSize,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    final text = widget.material.ocrText;
+    final offset = _sourceOffsetAt(pageIndex, position, pageSize, sourceBoxes);
+    if (offset == null || text.isEmpty) return null;
+    final safeOffset = math.min(offset, text.length - 1);
+    return _learningTextState.wordRangeAtOffset(safeOffset) ??
+        (safeOffset > 0
+            ? _learningTextState.wordRangeAtOffset(safeOffset - 1)
+            : null);
+  }
+
+  void _handleSourceMouseDown(
+    PointerDownEvent event,
+    int pageIndex,
+    Size pageSize,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    if (event.kind != PointerDeviceKind.mouse || event.buttons != 1) return;
+    final anchor = _nearestSourceOffsetAt(
+      pageIndex,
+      event.localPosition,
+      pageSize,
+      sourceBoxes,
+    );
+    if (anchor == null) return;
+    _mouseSelectionPointer = event.pointer;
+    _mouseSelectionPage = pageIndex;
+    _mouseSelectionAnchor = anchor;
+    _mouseSelectionStartPosition = event.localPosition;
+  }
+
+  void _handleSourceMouseMove(
+    PointerMoveEvent event,
+    int pageIndex,
+    Size pageSize,
+    List<_ResolvedSourceBox> sourceBoxes,
+  ) {
+    if (_mouseSelectionPointer != event.pointer ||
+        _mouseSelectionPage != pageIndex ||
+        event.kind != PointerDeviceKind.mouse) {
+      return;
+    }
+    final startPosition = _mouseSelectionStartPosition;
+    final anchor = _mouseSelectionAnchor;
+    if (startPosition == null ||
+        anchor == null ||
+        (event.localPosition - startPosition).distance < 3) {
+      return;
+    }
+    final current = _nearestSourceOffsetAt(
+      pageIndex,
+      event.localPosition,
+      pageSize,
+      sourceBoxes,
+    );
+    if (current == null) return;
+    setState(() {
+      _selectionStart = anchor;
+      _selectionEnd = current;
+    });
+    widget.onSidePanelModeChanged(_SidePanelMode.selection);
+  }
+
+  void _finishSourceMouseSelection(PointerEvent event) {
+    if (_mouseSelectionPointer != event.pointer) return;
+    _mouseSelectionPointer = null;
+    _mouseSelectionPage = null;
+    _mouseSelectionAnchor = null;
+    _mouseSelectionStartPosition = null;
+  }
+
   Rect _sourceSegmentRect(
     SourceWordBox box,
     Size pageSize,
@@ -1111,13 +1772,6 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
                   details.globalPosition,
                   focusOccurrence: false,
                 ),
-          onLongPressStart: !isLexicalRange
-              ? null
-              : (details) => _showMeaningPopover(
-                  range!.item,
-                  details.globalPosition,
-                  focusOccurrence: false,
-                ),
           child: color == null
               ? const SizedBox.expand()
               : DecoratedBox(
@@ -1170,61 +1824,62 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
               );
               return Listener(
                 behavior: HitTestBehavior.translucent,
-                onPointerDown: (_) {
-                  if (_selectionStart != null || _selectionEnd != null) {
-                    _clearSelection();
-                  }
-                },
+                onPointerDown: (event) => _handleSourceMouseDown(
+                  event,
+                  pageIndex,
+                  pageSize,
+                  sourceBoxes,
+                ),
+                onPointerMove: (event) => _handleSourceMouseMove(
+                  event,
+                  pageIndex,
+                  pageSize,
+                  sourceBoxes,
+                ),
+                onPointerUp: _finishSourceMouseSelection,
+                onPointerCancel: _finishSourceMouseSelection,
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onTap: _clearSelection,
-                  onPanStart: (details) {
-                    final anchor = _sourceOffsetAt(
+                  onLongPressStart: (details) {
+                    if (_sourceTouchPositions.length > 1) return;
+                    final range = _sourceWordRangeAt(
                       pageIndex,
                       details.localPosition,
                       pageSize,
                       sourceBoxes,
                     );
-                    if (anchor == null) {
-                      return;
-                    }
-                    setState(() {
-                      _dragPageIndex = pageIndex;
-                      _dragSelectionAnchor = anchor;
-                      _selectionStart = anchor;
-                      _selectionEnd = anchor;
-                    });
-                    widget.onSidePanelModeChanged(_SidePanelMode.selection);
+                    if (range == null) return;
+                    _longPressStartPosition = details.globalPosition;
+                    _selectWholeWord(range);
+                    _showMeaningPopover(
+                      range.item,
+                      details.globalPosition,
+                      focusOccurrence: false,
+                    );
                   },
-                  onPanUpdate: (details) {
-                    final anchor = _dragSelectionAnchor;
-                    if (_dragPageIndex != pageIndex || anchor == null) {
+                  onLongPressMoveUpdate: (details) {
+                    if (_sourceTouchPositions.length > 1) return;
+                    final start = _longPressStartPosition;
+                    if (start == null ||
+                        (details.globalPosition - start).distance <= 6) {
                       return;
                     }
-                    final current = _sourceOffsetAt(
+                    if (!_longPressRangeSelection) _hideMeaningPopover();
+                    final current = _nearestSourceOffsetAt(
                       pageIndex,
                       details.localPosition,
                       pageSize,
                       sourceBoxes,
                     );
-                    if (current == null) {
-                      return;
-                    }
-                    setState(() {
-                      _selectionStart = anchor;
-                      _selectionEnd = current;
-                    });
+                    if (current != null) _extendLongPressSelection(current);
                   },
-                  onPanEnd: (_) {
+                  onLongPressEnd: (_) {
                     setState(() {
-                      _dragPageIndex = null;
-                      _dragSelectionAnchor = null;
-                    });
-                  },
-                  onPanCancel: () {
-                    setState(() {
-                      _dragPageIndex = null;
-                      _dragSelectionAnchor = null;
+                      _longPressWordStart = null;
+                      _longPressWordEnd = null;
+                      _longPressStartPosition = null;
+                      _longPressRangeSelection = false;
                     });
                   },
                   child: Stack(
@@ -1240,6 +1895,114 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         ),
       ],
     );
+  }
+
+  void _handleSourcePointerDown(PointerDownEvent event) {
+    if (!_isTouchPointer(event)) return;
+    _sourceTouchPositions[event.pointer] = event.position;
+    if (_sourceTouchPositions.length == 2) {
+      final positions = _sourceTouchPositions.values.toList();
+      _pinchStartDistance = (positions[0] - positions[1]).distance;
+      _pinchStartZoom = widget.zoom;
+      final viewportBox =
+          _zoomViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      if (viewportBox != null) {
+        final globalFocal = Offset(
+          (positions[0].dx + positions[1].dx) / 2,
+          (positions[0].dy + positions[1].dy) / 2,
+        );
+        final focal = viewportBox.globalToLocal(globalFocal);
+        _pinchFocalPoint = focal;
+        final showingSource =
+            widget.mode == _MaterialDisplayMode.original &&
+            canDisplayOriginalSource(widget.material);
+        final horizontalOffset =
+            showingSource && _sourceHorizontalScrollController.hasClients
+            ? _sourceHorizontalScrollController.offset
+            : 0.0;
+        final verticalController = showingSource
+            ? _sourceScrollController
+            : _textScrollController;
+        final verticalOffset = verticalController.hasClients
+            ? verticalController.offset
+            : 0.0;
+        _pinchContentX = (horizontalOffset + focal.dx) / widget.zoom;
+        _pinchContentY = (verticalOffset + focal.dy) / widget.zoom;
+      }
+      _hideMeaningPopover();
+      _textLongPressTimer?.cancel();
+    }
+  }
+
+  void _handleSourcePointerMove(PointerMoveEvent event) {
+    if (!_sourceTouchPositions.containsKey(event.pointer)) return;
+    _sourceTouchPositions[event.pointer] = event.position;
+    final startDistance = _pinchStartDistance;
+    final startZoom = _pinchStartZoom;
+    if (_sourceTouchPositions.length < 2 ||
+        startDistance == null ||
+        startDistance <= 0 ||
+        startZoom == null) {
+      return;
+    }
+    final positions = _sourceTouchPositions.values.take(2).toList();
+    final distance = (positions[0] - positions[1]).distance;
+    final viewportBox =
+        _zoomViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (viewportBox != null) {
+      final globalFocal = Offset(
+        (positions[0].dx + positions[1].dx) / 2,
+        (positions[0].dy + positions[1].dy) / 2,
+      );
+      _pinchFocalPoint = viewportBox.globalToLocal(globalFocal);
+    }
+    final zoom = (startZoom * distance / startDistance)
+        .clamp(0.75, 3.0)
+        .toDouble();
+    if ((zoom - widget.zoom).abs() >= 0.01) {
+      widget.onZoomChanged(zoom);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _restorePinchFocalPoint(zoom);
+      });
+    }
+  }
+
+  void _restorePinchFocalPoint(double zoom) {
+    final focal = _pinchFocalPoint;
+    final contentX = _pinchContentX;
+    final contentY = _pinchContentY;
+    if (focal == null || contentY == null) return;
+    final showingSource =
+        widget.mode == _MaterialDisplayMode.original &&
+        canDisplayOriginalSource(widget.material);
+    if (showingSource &&
+        contentX != null &&
+        _sourceHorizontalScrollController.hasClients) {
+      final position = _sourceHorizontalScrollController.position;
+      final target = (contentX * zoom - focal.dx)
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      _sourceHorizontalScrollController.jumpTo(target);
+    }
+    final verticalController = showingSource
+        ? _sourceScrollController
+        : _textScrollController;
+    if (verticalController.hasClients) {
+      final position = verticalController.position;
+      final target = (contentY * zoom - focal.dy)
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      verticalController.jumpTo(target);
+    }
+  }
+
+  void _handleSourcePointerEnd(PointerEvent event) {
+    _sourceTouchPositions.remove(event.pointer);
+    if (_sourceTouchPositions.length < 2) {
+      _pinchStartDistance = null;
+      _pinchStartZoom = null;
+    }
   }
 
   Widget _buildSourceContent(_LearningTextState state) {
@@ -1258,55 +2021,67 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final scaledWidth = constraints.maxWidth * widget.zoom;
-        return DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey.shade300),
-            borderRadius: BorderRadius.zero,
-          ),
-          child: Scrollbar(
-            controller: _sourceHorizontalScrollController,
-            thumbVisibility: widget.zoom > 1,
-            notificationPredicate: (notification) => notification.depth == 0,
-            child: SingleChildScrollView(
+        return Listener(
+          key: _zoomViewportKey,
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _handleSourcePointerDown,
+          onPointerMove: _handleSourcePointerMove,
+          onPointerUp: _handleSourcePointerEnd,
+          onPointerCancel: _handleSourcePointerEnd,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey.shade300),
+              borderRadius: BorderRadius.zero,
+            ),
+            child: Scrollbar(
               controller: _sourceHorizontalScrollController,
-              scrollDirection: Axis.horizontal,
-              primary: false,
-              child: SizedBox(
-                width: scaledWidth,
-                height: constraints.maxHeight,
-                child: Scrollbar(
-                  controller: _sourceScrollController,
-                  thumbVisibility: true,
-                  child: SingleChildScrollView(
+              thumbVisibility: widget.zoom > 1,
+              notificationPredicate: (notification) => notification.depth == 0,
+              child: SingleChildScrollView(
+                controller: _sourceHorizontalScrollController,
+                scrollDirection: Axis.horizontal,
+                primary: false,
+                child: SizedBox(
+                  width: scaledWidth,
+                  height: constraints.maxHeight,
+                  child: Scrollbar(
                     controller: _sourceScrollController,
-                    padding: const EdgeInsets.all(12),
-                    primary: false,
-                    child: Column(
-                      children: [
-                        for (var index = 0; index < pages.length; index++) ...[
-                          if (index > 0) const SizedBox(height: 12),
-                          DecoratedBox(
-                            key: _sourcePageKeys[index],
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              border: Border.all(color: Colors.grey.shade300),
-                              boxShadow: const [
-                                BoxShadow(
-                                  blurRadius: 8,
-                                  color: Color(0x1F000000),
-                                  offset: Offset(0, 2),
-                                ),
-                              ],
+                    thumbVisibility: true,
+                    child: SingleChildScrollView(
+                      controller: _sourceScrollController,
+                      padding: const EdgeInsets.all(12),
+                      primary: false,
+                      child: Column(
+                        children: [
+                          for (
+                            var index = 0;
+                            index < pages.length;
+                            index++
+                          ) ...[
+                            if (index > 0) const SizedBox(height: 12),
+                            DecoratedBox(
+                              key: _sourcePageKeys[index],
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                border: Border.all(color: Colors.grey.shade300),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    blurRadius: 8,
+                                    color: Color(0x1F000000),
+                                    offset: Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: _buildSourcePage(
+                                pages[index],
+                                index,
+                                state,
+                                sourceBoxes,
+                              ),
                             ),
-                            child: _buildSourcePage(
-                              pages[index],
-                              index,
-                              state,
-                              sourceBoxes,
-                            ),
-                          ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
                   ),
                 ),
@@ -1328,8 +2103,12 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         borderRadius: BorderRadius.zero,
       ),
       child: Listener(
+        key: _zoomViewportKey,
         behavior: HitTestBehavior.translucent,
-        onPointerDown: (event) => _handleTextPointerDown(event, maxWidth),
+        onPointerDown: (event) => _handleTextTouchDown(event, maxWidth),
+        onPointerMove: (event) => _handleTextTouchMove(event, maxWidth),
+        onPointerUp: _finishTextTouch,
+        onPointerCancel: _finishTextTouch,
         child: SelectableText.rich(
           TextSpan(children: _buildTextSpans(state)),
           key: _textKey,
@@ -1354,6 +2133,12 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     );
   }
 
+  bool _itemHasJapaneseMeaning(LexicalItemResult item) {
+    // 未知語への分類は現在DBから取得できた日本語訳だけを正とする。
+    // 解析レスポンスのhasMeaningは生成前の古い状態になり得るため使わない。
+    return widget.lookupCache.hasJapaneseMeaningFor(item);
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = _learningTextState;
@@ -1361,12 +2146,16 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     final panelItems = switch (widget.sidePanelMode) {
       _SidePanelMode.unknown =>
         result?.items
-                .where((item) => !item.isLearned && item.hasMeaning)
+                .where(
+                  (item) => !item.isLearned && _itemHasJapaneseMeaning(item),
+                )
                 .toList() ??
             const [],
       _SidePanelMode.untranslated =>
         result?.items
-                .where((item) => !item.isLearned && !item.hasMeaning)
+                .where(
+                  (item) => !item.isLearned && !_itemHasJapaneseMeaning(item),
+                )
                 .toList() ??
             const [],
       _SidePanelMode.known =>
@@ -1384,6 +2173,11 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     final sidePanel = _SelectionMeaningPanel(
       title: panelTitle,
       items: panelItems,
+      onCopy:
+          widget.sidePanelMode == _SidePanelMode.selection &&
+              _selectedText.isNotEmpty
+          ? _copySelection
+          : null,
       userId: ref.read(appSessionProvider).userId,
       material: widget.material,
       onAdded: () {
@@ -1399,6 +2193,11 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     );
     final overview = _AnalysisHeader(
       analysis: widget.analysis,
+      hasJapaneseMeaning: _itemHasJapaneseMeaning,
+      compact: MediaQuery.sizeOf(context).width < 760,
+      onCollapse: MediaQuery.sizeOf(context).width < 760
+          ? () => setState(() => _mobileOverviewCollapsed = true)
+          : null,
       onShowItems: (mode) => widget.onSidePanelModeChanged(
         widget.sidePanelMode == mode ? null : mode,
       ),
@@ -1428,13 +2227,72 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
               );
 
         if (constraints.maxWidth < 760) {
+          final maxPanelHeight = math.max(120.0, constraints.maxHeight * 0.7);
+          final panelHeight = _mobilePanelHeight
+              .clamp(120.0, maxPanelHeight)
+              .toDouble();
+          final mobileContent = _mobileOverviewCollapsed
+              ? Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    content,
+                    Positioned(
+                      top: widget.mobileAppBarCollapsed
+                          ? MediaQuery.paddingOf(context).top + 48
+                          : 4,
+                      right: 4,
+                      width: 40,
+                      height: 40,
+                      child: _CollapsedAppBarButton(
+                        tooltip: 'Progress Overviewを表示',
+                        icon: Icons.analytics_outlined,
+                        onPressed: () =>
+                            setState(() => _mobileOverviewCollapsed = false),
+                      ),
+                    ),
+                  ],
+                )
+              : content;
           return Column(
             children: [
-              Expanded(child: content),
-              const SizedBox(height: 8),
-              overview,
+              if (!_mobileOverviewCollapsed) ...[
+                overview,
+                const SizedBox(height: 8),
+              ],
+              Expanded(child: mobileContent),
               if (widget.sidePanelMode != null)
-                SizedBox(height: 260, child: sidePanel),
+                SizedBox(
+                  height: panelHeight,
+                  child: Column(
+                    children: [
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onVerticalDragUpdate: (details) {
+                          setState(() {
+                            _mobilePanelHeight =
+                                (_mobilePanelHeight - details.delta.dy)
+                                    .clamp(120.0, maxPanelHeight)
+                                    .toDouble();
+                          });
+                        },
+                        child: SizedBox(
+                          height: 22,
+                          child: Center(
+                            child: Container(
+                              width: 44,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF9AA7B2),
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(child: sidePanel),
+                    ],
+                  ),
+                ),
             ],
           );
         }
@@ -1466,45 +2324,6 @@ String _sourceTypeForMaterial(MaterialItem material) {
   return material.sourceMimeType == 'application/pdf'
       ? 'pdf_material'
       : 'image_material';
-}
-
-LexicalItemResult _lexicalItemForWordInResult(
-  String word,
-  ExtractWordsResult? result, {
-  int? start,
-  int? end,
-}) {
-  final cleaned = _cleanLookupWord(word);
-  final normalized = _normalizeLookupWord(cleaned);
-  final items = result?.items ?? const <LexicalItemResult>[];
-
-  // 表示中の文字範囲と解析結果の occurrence が完全一致するときだけ、
-  // その解析項目を使用する。UI側で複数形・活用形・別の出現位置を推測しない。
-  if (start != null && end != null) {
-    for (final item in items.where((item) => item.kind == 'word')) {
-      final hasExactOccurrence = item.occurrences.any(
-        (occurrence) => occurrence.start == start && occurrence.end == end,
-      );
-      if (!hasExactOccurrence) {
-        continue;
-      }
-      final normalizedForms = <String>{
-        _normalizeLookupWord(item.text),
-        ...item.surfaceForms.map(_normalizeLookupWord),
-      };
-      if (normalizedForms.contains(normalized)) {
-        return item;
-      }
-    }
-  }
-
-  // occurrence がない解析結果に限り、見出し語そのものの完全一致だけ許可する。
-  for (final item in items.where((item) => item.kind == 'word')) {
-    if (_normalizeLookupWord(item.text) == normalized) {
-      return item;
-    }
-  }
-  return _fallbackLexicalItem(cleaned);
 }
 
 class _LearningTextState {
@@ -1787,23 +2606,6 @@ bool _isValidTextRange(String text, int start, int end) {
   return start >= 0 && end > start && end <= text.length;
 }
 
-bool _isLikelyEnglishFallbackWord(RegExpMatch match) {
-  final word = match.group(0) ?? '';
-  final normalized = _normalizeLookupWord(word);
-  if (normalized.length == 1) {
-    return word == 'I' || normalized == 'a' && word == 'a';
-  }
-  return !{
-    'http',
-    'https',
-    'www',
-    'com',
-    'org',
-    'net',
-    'pdf',
-  }.contains(normalized);
-}
-
 class _ResolvedSourceBox {
   final SourceWordBox box;
   final _TextRange textRange;
@@ -1888,9 +2690,18 @@ class _TextRange {
 
 class _AnalysisHeader extends StatelessWidget {
   final AsyncValue<ExtractWordsResult>? analysis;
+  final bool Function(LexicalItemResult item) hasJapaneseMeaning;
   final ValueChanged<_SidePanelMode> onShowItems;
+  final VoidCallback? onCollapse;
+  final bool compact;
 
-  const _AnalysisHeader({required this.analysis, required this.onShowItems});
+  const _AnalysisHeader({
+    required this.analysis,
+    required this.hasJapaneseMeaning,
+    required this.onShowItems,
+    this.onCollapse,
+    this.compact = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1924,23 +2735,33 @@ class _AnalysisHeader extends StatelessWidget {
         ),
       ),
       data: (result) {
-        final percent = (result.coverageRate * 100).round();
+        final knownCount = result.items.where((item) => item.isLearned).length;
         final untranslatedCount = result.items
-            .where((item) => !item.isLearned && !item.hasMeaning)
+            .where((item) => !item.isLearned && !hasJapaneseMeaning(item))
             .length;
+        final translatedUnknownCount = result.items
+            .where((item) => !item.isLearned && hasJapaneseMeaning(item))
+            .length;
+        final translatedTotal = knownCount + translatedUnknownCount;
+        final coverageRate = translatedTotal == 0
+            ? 0.0
+            : knownCount / translatedTotal;
+        final percent = (coverageRate * 100).round();
         return Container(
           width: double.infinity,
           color: Colors.white,
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
+          padding: compact
+              ? const EdgeInsets.all(6)
+              : const EdgeInsets.fromLTRB(20, 14, 20, 16),
           child: Card(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.all(compact ? 10 : 16),
               child: Row(
                 children: [
                   SquareProgressIndicator(
-                    value: result.coverageRate,
-                    size: 62,
-                    strokeWidth: 6,
+                    value: coverageRate,
+                    size: compact ? 52 : 62,
+                    strokeWidth: compact ? 5 : 6,
                     color: theme.colorScheme.secondary,
                     backgroundColor: const Color(0xFFDDE3EA),
                     child: Text.rich(
@@ -1950,7 +2771,7 @@ class _AnalysisHeader extends StatelessWidget {
                             text: '$percent',
                             style: TextStyle(
                               color: theme.colorScheme.secondary,
-                              fontSize: 22,
+                              fontSize: compact ? 19 : 22,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
@@ -1962,16 +2783,37 @@ class _AnalysisHeader extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 16),
+                  SizedBox(width: compact ? 10 : 16),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Progress Overview',
-                          style: theme.textTheme.titleMedium,
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Progress Overview',
+                                style: theme.textTheme.titleMedium,
+                              ),
+                            ),
+                            if (onCollapse != null)
+                              IconButton(
+                                tooltip: '操作バーと進捗を折りたたむ',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 32,
+                                  height: 32,
+                                ),
+                                padding: EdgeInsets.zero,
+                                onPressed: onCollapse,
+                                icon: const Icon(
+                                  Icons.keyboard_arrow_up,
+                                  size: 20,
+                                ),
+                              ),
+                          ],
                         ),
-                        const SizedBox(height: 8),
+                        SizedBox(height: compact ? 5 : 8),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
@@ -1989,13 +2831,13 @@ class _AnalysisHeader extends StatelessWidget {
                               icon: Icons.check_circle_outline,
                               backgroundColor: const Color(0xFFD4E3FF),
                               foregroundColor: const Color(0xFF004883),
-                              label: Text('既知 ${result.knownCount}'),
+                              label: Text('既知 $knownCount'),
                             ),
                             _AnalysisFilterButton(
                               icon: Icons.radio_button_unchecked,
                               backgroundColor: const Color(0xFFD4E3FF),
                               foregroundColor: const Color(0xFF004883),
-                              label: Text('未知 ${result.unknownCount}'),
+                              label: Text('未知 $translatedUnknownCount'),
                               onPressed: () =>
                                   onShowItems(_SidePanelMode.unknown),
                             ),
@@ -2067,9 +2909,10 @@ class _AnalysisFilterButton extends StatelessWidget {
   }
 }
 
-class _SelectionMeaningPanel extends StatelessWidget {
+class _SelectionMeaningPanel extends StatefulWidget {
   final String title;
   final List<LexicalItemResult> items;
+  final VoidCallback? onCopy;
   final String userId;
   final MaterialItem material;
   final VoidCallback onAdded;
@@ -2080,6 +2923,7 @@ class _SelectionMeaningPanel extends StatelessWidget {
   const _SelectionMeaningPanel({
     this.title = '選択範囲',
     required this.items,
+    this.onCopy,
     required this.userId,
     required this.material,
     required this.onAdded,
@@ -2088,8 +2932,17 @@ class _SelectionMeaningPanel extends StatelessWidget {
   });
 
   @override
+  State<_SelectionMeaningPanel> createState() => _SelectionMeaningPanelState();
+}
+
+class _SelectionMeaningPanelState extends State<_SelectionMeaningPanel> {
+  String _query = '';
+
+  @override
   Widget build(BuildContext context) {
-    final visibleItems = items;
+    final visibleItems = widget.items
+        .where((item) => widget.lookupCache.matchesSearch(item, _query))
+        .toList();
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -2101,24 +2954,56 @@ class _SelectionMeaningPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: const Color(0xFF041627),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.centerRight,
-              child: _BatchAddButton(
-                items: visibleItems,
-                userId: userId,
-                material: material,
-                onAdded: onAdded,
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: const Color(0xFF041627),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: SizedBox(
+                    height: 34,
+                    child: TextField(
+                      onChanged: (value) => setState(() => _query = value),
+                      textInputAction: TextInputAction.search,
+                      decoration: const InputDecoration(
+                        hintText: '検索',
+                        isDense: true,
+                        prefixIcon: Icon(Icons.search, size: 17),
+                        prefixIconConstraints: BoxConstraints(minWidth: 30),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 8,
+                        ),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                if (widget.onCopy != null)
+                  IconButton.outlined(
+                    tooltip: '選択範囲をコピー',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.onCopy,
+                    icon: const Icon(Icons.copy, size: 18),
+                  ),
+                _BatchAddButton(
+                  items: visibleItems,
+                  userId: widget.userId,
+                  material: widget.material,
+                  onAdded: widget.onAdded,
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             Expanded(
@@ -2131,11 +3016,11 @@ class _SelectionMeaningPanel extends StatelessWidget {
                         final item = visibleItems[index];
                         return _SelectionMeaningTile(
                           item: item,
-                          userId: userId,
-                          material: material,
-                          onAdded: onAdded,
-                          onShowDetails: onShowDetails,
-                          lookupCache: lookupCache,
+                          userId: widget.userId,
+                          material: widget.material,
+                          onAdded: widget.onAdded,
+                          onShowDetails: widget.onShowDetails,
+                          lookupCache: widget.lookupCache,
                         );
                       },
                     ),
@@ -2767,6 +3652,7 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
   final Set<int> _adding = {};
   final Set<int> _added = {};
   late Future<WordLookupResult> _future;
+  late int _lookupRevision;
   bool _isMarkingKnown = false;
   bool _isKnown = false;
 
@@ -2774,6 +3660,7 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
   void initState() {
     super.initState();
     _future = _createFuture();
+    _lookupRevision = widget.lookupCache.revision;
     _isKnown = widget.item.isLearned;
   }
 
@@ -2781,8 +3668,10 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
   void didUpdateWidget(covariant _SelectionMeaningTile oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.item.text != widget.item.text ||
-        oldWidget.item.partOfSpeech != widget.item.partOfSpeech) {
+        oldWidget.item.partOfSpeech != widget.item.partOfSpeech ||
+        _lookupRevision != widget.lookupCache.revision) {
       _future = _createFuture();
+      _lookupRevision = widget.lookupCache.revision;
       _isKnown = widget.item.isLearned;
     }
   }
@@ -2955,11 +3844,19 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
   }
 
   MeaningInfo? _firstMeaning(List<MeaningInfo> meanings) {
-    final sorted = [...meanings]
-      ..sort(
-        (a, b) => _compareMeaningForContext(a, b, widget.item.partOfSpeech),
-      );
-    return sorted.isEmpty ? null : sorted.first;
+    final matching = meanings
+        .where(
+          (meaning) => _meaningMatchesItemPartOfSpeech(
+            widget.item.partOfSpeech,
+            meaning.partOfSpeech,
+          ),
+        )
+        .toList();
+    for (final meaning in matching) {
+      if (_hasJapaneseDefinition(meaning)) return meaning;
+    }
+    if (matching.isNotEmpty) return matching.first;
+    return null;
   }
 
   String _contextPartOfSpeechLabel(LexicalItemResult item) {

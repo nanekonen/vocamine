@@ -98,10 +98,9 @@ class _MyPageScreenState extends ConsumerState<MyPageScreen> {
         );
         return;
       }
-      final redirectTo = '${Uri.base.origin}/auth/callback';
       final launched = await SupabaseAuthService.auth.signInWithOAuth(
         OAuthProvider.google,
-        redirectTo: redirectTo,
+        redirectTo: SupabaseAuthService.authRedirectUrl,
         queryParams: const {'prompt': 'select_account'},
       );
       if (!launched && mounted) {

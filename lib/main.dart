@@ -1,8 +1,13 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/main_tab_screen.dart';
 import 'screens/materials_screen.dart';
 import 'screens/material_detail_screen.dart';
@@ -15,6 +20,7 @@ import 'screens/login_screen.dart';
 import 'services/app_session.dart';
 import 'services/app_messenger.dart';
 import 'services/supabase_auth_service.dart';
+import 'services/vocamine_api_client.dart';
 import 'screens/learned_words_screen.dart';
 
 Future<void> main() async {
@@ -25,10 +31,11 @@ Future<void> main() async {
 }
 
 final routerProvider = Provider<GoRouter>((ref) {
-  final session = ref.watch(appSessionProvider);
-  return GoRouter(
+  late final GoRouter router;
+  router = GoRouter(
     initialLocation: '/',
     redirect: (context, state) {
+      final session = ref.read(appSessionProvider);
       final path = state.uri.path;
       if (path == '/auth/callback') {
         return null;
@@ -45,23 +52,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
-      GoRoute(
-        path: '/',
-        builder: (context, state) {
-          if (!session.isLoaded) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          if (!session.isLoggedIn) {
-            return const LoginScreen();
-          }
-          if (!session.setupCompleted) {
-            return const LevelSetupScreen();
-          }
-          return const MainTabScreen();
-        },
-      ),
+      GoRoute(path: '/', builder: (context, state) => const _RootScreen()),
       GoRoute(
         path: '/auth/callback',
         builder: (context, state) => AuthCallbackScreen(callbackUri: state.uri),
@@ -86,20 +77,42 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/materials/folder',
         builder: (context, state) {
-          final extra = state.extra as Map<String, dynamic>;
+          final extra = state.extra is Map<String, dynamic>
+              ? state.extra! as Map<String, dynamic>
+              : const <String, dynamic>{};
+          final folderId =
+              state.uri.queryParameters['folderId'] ??
+              extra['folderId'] as String?;
+          if (folderId == null || folderId.isEmpty) {
+            return const _InvalidRouteScreen(message: '教材フォルダが指定されていません');
+          }
           return MaterialsScreen(
-            folderId: extra['folderId'] as String,
-            title: extra['title'] as String,
+            folderId: folderId,
+            title:
+                state.uri.queryParameters['title'] ??
+                extra['title'] as String? ??
+                '教材フォルダ',
           );
         },
       ),
       GoRoute(
         path: '/materials/detail',
         builder: (context, state) {
-          final extra = state.extra as Map<String, dynamic>;
+          final extra = state.extra is Map<String, dynamic>
+              ? state.extra! as Map<String, dynamic>
+              : const <String, dynamic>{};
+          final materialId =
+              state.uri.queryParameters['materialId'] ??
+              extra['materialId'] as String?;
+          if (materialId == null || materialId.isEmpty) {
+            return const _InvalidRouteScreen(message: '教材が指定されていません');
+          }
           return MaterialDetailScreen(
-            materialId: extra['materialId'] as String,
-            title: extra['title'] as String,
+            materialId: materialId,
+            title:
+                state.uri.queryParameters['title'] ??
+                extra['title'] as String? ??
+                '教材',
           );
         },
       ),
@@ -112,26 +125,97 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/wordbook/folder',
         builder: (context, state) {
-          final extra = state.extra as Map<String, dynamic>;
+          final extra = state.extra is Map<String, dynamic>
+              ? state.extra! as Map<String, dynamic>
+              : const <String, dynamic>{};
+          final folderId =
+              state.uri.queryParameters['folderId'] ??
+              extra['folderId'] as String?;
+          if (folderId == null || folderId.isEmpty) {
+            return const _InvalidRouteScreen(message: '単語帳フォルダが指定されていません');
+          }
           return WordbookListScreen(
-            folderId: extra['folderId'] as String,
-            title: extra['title'] as String,
+            folderId: folderId,
+            title:
+                state.uri.queryParameters['title'] ??
+                extra['title'] as String? ??
+                '単語帳フォルダ',
           );
         },
       ),
       GoRoute(
         path: '/wordbook/detail',
         builder: (context, state) {
-          final extra = state.extra as Map<String, dynamic>;
+          final extra = state.extra is Map<String, dynamic>
+              ? state.extra! as Map<String, dynamic>
+              : const <String, dynamic>{};
+          final wordbookId =
+              state.uri.queryParameters['wordbookId'] ??
+              extra['wordbookId'] as String?;
+          if (wordbookId == null || wordbookId.isEmpty) {
+            return const _InvalidRouteScreen(message: '単語帳が指定されていません');
+          }
           return WordbookScreen(
-            wordbookId: extra['wordbookId'] as String,
-            title: extra['title'] as String,
+            wordbookId: wordbookId,
+            title:
+                state.uri.queryParameters['title'] ??
+                extra['title'] as String? ??
+                '単語帳',
           );
         },
       ),
     ],
   );
+  ref.listen<AppSession>(appSessionProvider, (previous, next) {
+    final routingStateChanged =
+        previous?.isLoaded != next.isLoaded ||
+        previous?.isLoggedIn != next.isLoggedIn ||
+        previous?.setupCompleted != next.setupCompleted;
+    if (routingStateChanged) router.refresh();
+  });
+  ref.onDispose(router.dispose);
+  return router;
 });
+
+class _RootScreen extends ConsumerWidget {
+  const _RootScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(appSessionProvider);
+    if (!session.isLoaded) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 12),
+              Text('ログイン情報を読み込み中…'),
+            ],
+          ),
+        ),
+      );
+    }
+    if (!session.isLoggedIn) return const LoginScreen();
+    if (!session.setupCompleted) return const LevelSetupScreen();
+    return const MainTabScreen();
+  }
+}
+
+class _InvalidRouteScreen extends StatelessWidget {
+  final String message;
+
+  const _InvalidRouteScreen({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(),
+      body: Center(child: Text(message)),
+    );
+  }
+}
 
 class GlossalyzeApp extends ConsumerStatefulWidget {
   const GlossalyzeApp({super.key});
@@ -141,10 +225,118 @@ class GlossalyzeApp extends ConsumerStatefulWidget {
 }
 
 class _GlossalyzeAppState extends ConsumerState<GlossalyzeApp> {
+  final _api = VocamineApiClient();
+  final _appLinks = AppLinks();
+  StreamSubscription<AuthState>? _authSubscription;
+  StreamSubscription<Uri>? _deepLinkSubscription;
+  String? _lastSyncedAccessToken;
+  bool _handlingAuthCallback = false;
+
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => ref.read(appSessionProvider.notifier).load());
+    Future.microtask(_initializeSession);
+  }
+
+  Future<void> _initializeSession() async {
+    await ref.read(appSessionProvider.notifier).load();
+    if (!SupabaseAuthService.isConfigured) return;
+
+    _authSubscription = SupabaseAuthService.auth.onAuthStateChange.listen((
+      state,
+    ) {
+      if (state.event == AuthChangeEvent.signedOut) {
+        _lastSyncedAccessToken = null;
+        unawaited(ref.read(appSessionProvider.notifier).signOut());
+        return;
+      }
+      final accessToken = state.session?.accessToken;
+      if (accessToken != null && accessToken.isNotEmpty) {
+        unawaited(_syncAuthenticatedSession(accessToken));
+      }
+    });
+
+    if (!kIsWeb) {
+      _deepLinkSubscription = _appLinks.uriLinkStream.listen(
+        (uri) => unawaited(_handleNativeAuthCallback(uri)),
+        onError: (Object error) {
+          AppMessenger.show('ログイン画面からアプリへ戻れませんでした: $error');
+        },
+      );
+      final initialLink = await _appLinks.getInitialLink();
+      if (initialLink != null) {
+        await _handleNativeAuthCallback(initialLink);
+      }
+    }
+
+    final accessToken = SupabaseAuthService.auth.currentSession?.accessToken;
+    if (accessToken != null && accessToken.isNotEmpty) {
+      await _syncAuthenticatedSession(accessToken);
+    }
+  }
+
+  Future<void> _handleNativeAuthCallback(Uri uri) async {
+    final isLoginCallback =
+        uri.scheme == 'com.example.vacamine' && uri.host == 'login-callback';
+    if (!isLoginCallback || _handlingAuthCallback) return;
+
+    final callbackError =
+        uri.queryParameters['error_description'] ??
+        uri.queryParameters['error'];
+    if (callbackError != null && callbackError.isNotEmpty) {
+      AppMessenger.show('Googleログインに失敗しました: $callbackError');
+      return;
+    }
+    if (!uri.queryParameters.containsKey('code') &&
+        !uri.fragment.contains('access_token=')) {
+      return;
+    }
+
+    _handlingAuthCallback = true;
+    AppMessenger.show('Googleログインを確認中…');
+    try {
+      await SupabaseAuthService.auth
+          .getSessionFromUrl(uri)
+          .timeout(const Duration(seconds: 30));
+      final accessToken = SupabaseAuthService.auth.currentSession?.accessToken;
+      if (accessToken == null || accessToken.isEmpty) {
+        throw Exception('Supabaseセッションを取得できませんでした');
+      }
+      await _syncAuthenticatedSession(accessToken);
+    } on TimeoutException {
+      AppMessenger.show('Googleログインの確認がタイムアウトしました');
+    } catch (error) {
+      AppMessenger.show('Googleログインの確認に失敗しました: $error');
+    } finally {
+      _handlingAuthCallback = false;
+    }
+  }
+
+  Future<void> _syncAuthenticatedSession(String accessToken) async {
+    if (_lastSyncedAccessToken == accessToken) return;
+    _lastSyncedAccessToken = accessToken;
+    try {
+      final session = await _api.resolveAuthSession(accessToken: accessToken);
+      await ref
+          .read(appSessionProvider.notifier)
+          .save(
+            userId: session.userId,
+            email: session.email,
+            username: session.username,
+            level: session.level,
+            setupCompleted: session.setupCompleted,
+          );
+    } catch (error) {
+      _lastSyncedAccessToken = null;
+      AppMessenger.show('ログイン情報の取得に失敗しました: $error');
+    }
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    _deepLinkSubscription?.cancel();
+    super.dispose();
   }
 
   @override
