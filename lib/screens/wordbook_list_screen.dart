@@ -44,12 +44,14 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
 
   Future<void> _studyFolder() async {
     final folderId = widget.folderId;
-    if (folderId == null || _loadingFolderStudy) return;
+    if (_loadingFolderStudy) return;
     final library = ref.read(wordbookLibraryProvider);
-    final folderIds = _descendantFolderIds(folderId);
-    final books = library.wordbooks
-        .where((book) => folderIds.contains(book.folderId))
-        .toList();
+    final folderIds = folderId == null ? null : _descendantFolderIds(folderId);
+    final books = folderId == null
+        ? library.wordbooks
+        : library.wordbooks
+              .where((book) => folderIds!.contains(book.folderId))
+              .toList();
     if (books.isEmpty) {
       ScaffoldMessenger.of(
         context,
@@ -68,9 +70,14 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
           ),
       ]);
       final combined = <Word>[];
+      final seenMeanings = <String>{};
       for (var index = 0; index < books.length; index++) {
         final book = books[index];
         for (final word in lists[index]) {
+          final meaningKey = word.meaningId != null
+              ? 'meaning:${word.meaningId}'
+              : '${word.headword.toLowerCase()}:${word.partOfSpeech}';
+          if (!seenMeanings.add(meaningKey)) continue;
           combined.add(word.copyWith(studyKey: '${book.id}:${word.id}'));
         }
       }
@@ -84,7 +91,9 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
       await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           builder: (_) => WordbookScreen(
-            wordbookId: 'folder-combined:$folderId',
+            wordbookId: folderId == null
+                ? 'root-combined'
+                : 'folder-combined:$folderId',
             title: widget.title,
             combinedWords: combined,
           ),
@@ -367,9 +376,6 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
       }
     });
     final library = ref.watch(wordbookLibraryProvider);
-    final horizontalPadding = MediaQuery.sizeOf(context).width >= 900
-        ? 40.0
-        : 16.0;
     final wordbooks = <Wordbook>[
       ...library.folders
           .where((folder) => folder.parentId == widget.folderId)
@@ -384,142 +390,194 @@ class _WordbookListScreenState extends ConsumerState<WordbookListScreen> {
       ...library.wordbooks.where((book) => book.folderId == widget.folderId),
     ];
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        actions: [
-          TextButton.icon(
-            onPressed: _createWordbook,
-            icon: const Icon(Icons.library_add_outlined),
-            label: const Text('単語帳を作成'),
-          ),
-          TextButton.icon(
-            onPressed: _createFolder,
-            icon: const Icon(Icons.create_new_folder_outlined),
-            label: const Text('フォルダを作成'),
-          ),
-          IconButton(
-            tooltip: '更新',
-            icon: const Icon(Icons.refresh),
-            onPressed: _load,
-          ),
-        ],
-      ),
-      body: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onSecondaryTapDown: (details) =>
-            _showBackgroundMenu(details.globalPosition),
-        child: RefreshIndicator(
-          onRefresh: () async => _load(),
-          child: ListView(
-            padding: EdgeInsets.fromLTRB(
-              horizontalPadding,
-              24,
-              horizontalPadding,
-              32,
-            ),
-            children: [
-              if (!_isRoot)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 22,
-                        vertical: 16,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final horizontalPadding = constraints.maxWidth >= 900 ? 40.0 : 16.0;
+        final compact = constraints.maxWidth < 600;
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(widget.title),
+            actions: [
+              if (compact)
+                PopupMenuButton<String>(
+                  tooltip: '単語帳メニュー',
+                  onSelected: (action) {
+                    if (action == 'wordbook') _createWordbook();
+                    if (action == 'folder') _createFolder();
+                    if (action == 'refresh') _load();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'wordbook',
+                      child: ListTile(
+                        leading: Icon(Icons.library_add_outlined),
+                        title: Text('単語帳を作成'),
                       ),
-                      textStyle: Theme.of(context).textTheme.titleSmall,
                     ),
-                    onPressed: _loadingFolderStudy ? null : _studyFolder,
-                    icon: _loadingFolderStudy
-                        ? const SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.school_outlined),
-                    label: const Text('フォルダ内をまとめて学習'),
-                  ),
-                ),
-              if (!_isRoot) const SizedBox(height: 24),
-              if (wordbooks.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 24),
-                  child: Text(
-                    _isRoot ? '単語帳はまだありません' : 'このフォルダには教材がありません',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    PopupMenuItem(
+                      value: 'folder',
+                      child: ListTile(
+                        leading: Icon(Icons.create_new_folder_outlined),
+                        title: Text('フォルダを作成'),
+                      ),
                     ),
-                  ),
-                )
-              else
-                Wrap(
-                  spacing: 24,
-                  runSpacing: 24,
-                  children: [
-                    ...wordbooks.map(
-                      (book) => GestureDetector(
-                        onSecondaryTapDown: (_) {},
-                        child: _WordbookTile(
-                          icon: book.sourceFolderId != null
-                              ? Icons.folder_outlined
-                              : book.sourceType == 'deleted_material'
-                              ? Icons.delete_outline
-                              : Icons.menu_book_outlined,
-                          title: book.name,
-                          subtitle: library.movingWordbookIds.contains(book.id)
-                              ? '移動中…'
-                              : book.sourceFolderId != null
-                              ? '単語帳フォルダ'
-                              : book.sourceType == 'deleted_material'
-                              ? '削除後も単語を保持'
-                              : '単語帳',
-                          accentColor: book.sourceFolderId != null
-                              ? const Color(0xFFC9A900)
-                              : book.sourceType == 'deleted_material'
-                              ? Theme.of(context).colorScheme.error
-                              : Theme.of(context).colorScheme.primary,
-                          onTap: () {
-                            if (library.movingWordbookIds.contains(book.id)) {
-                              return;
-                            }
-                            if (book.sourceFolderId != null) {
-                              context.push(
-                                '/wordbook/folder',
-                                extra: {
-                                  'folderId': book.sourceFolderId,
-                                  'title': book.name,
-                                },
-                              );
-                              return;
-                            }
-                            context.push(
-                              '/wordbook/detail',
-                              extra: {
-                                'wordbookId': book.id,
-                                'title': book.name,
-                              },
-                            );
-                          },
-                          onMenuSelected:
-                              library.movingWordbookIds.contains(book.id)
-                              ? null
-                              : (action) => _handleAction(action, book),
-                          isLoading: library.movingWordbookIds.contains(
-                            book.id,
-                          ),
-                          isFolder: book.sourceFolderId != null,
-                          itemCount: book.sourceFolderId != null
-                              ? _folderWordCount(book.sourceFolderId!, library)
-                              : book.wordCount,
-                        ),
+                    PopupMenuItem(
+                      value: 'refresh',
+                      child: ListTile(
+                        leading: Icon(Icons.refresh),
+                        title: Text('更新'),
                       ),
                     ),
                   ],
+                )
+              else ...[
+                TextButton.icon(
+                  onPressed: _createWordbook,
+                  icon: const Icon(Icons.library_add_outlined),
+                  label: const Text('単語帳を作成'),
                 ),
+                TextButton.icon(
+                  onPressed: _createFolder,
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                  label: const Text('フォルダを作成'),
+                ),
+                IconButton(
+                  tooltip: '更新',
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _load,
+                ),
+              ],
             ],
           ),
-        ),
-      ),
+          body: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onSecondaryTapDown: (details) =>
+                _showBackgroundMenu(details.globalPosition),
+            child: RefreshIndicator(
+              onRefresh: () async => _load(),
+              child: ListView(
+                padding: EdgeInsets.fromLTRB(
+                  horizontalPadding,
+                  24,
+                  horizontalPadding,
+                  32,
+                ),
+                children: [
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: SizedBox(
+                      width: compact ? double.infinity : null,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 22,
+                            vertical: 16,
+                          ),
+                          textStyle: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        onPressed: _loadingFolderStudy ? null : _studyFolder,
+                        icon: _loadingFolderStudy
+                            ? const SizedBox.square(
+                                dimension: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.school_outlined),
+                        label: Text(
+                          _isRoot ? 'すべての単語帳をまとめて学習' : 'フォルダ内をまとめて学習',
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  if (wordbooks.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Text(
+                        _isRoot ? '単語帳はまだありません' : 'このフォルダには教材がありません',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    )
+                  else
+                    Wrap(
+                      spacing: 24,
+                      runSpacing: 24,
+                      children: [
+                        ...wordbooks.map(
+                          (book) => GestureDetector(
+                            onSecondaryTapDown: (_) {},
+                            child: _WordbookTile(
+                              icon: book.sourceFolderId != null
+                                  ? Icons.folder_outlined
+                                  : book.sourceType == 'deleted_material'
+                                  ? Icons.delete_outline
+                                  : Icons.menu_book_outlined,
+                              title: book.name,
+                              subtitle:
+                                  library.movingWordbookIds.contains(book.id)
+                                  ? '移動中…'
+                                  : book.sourceFolderId != null
+                                  ? '単語帳フォルダ'
+                                  : book.sourceType == 'deleted_material'
+                                  ? '削除後も単語を保持'
+                                  : '単語帳',
+                              accentColor: book.sourceFolderId != null
+                                  ? const Color(0xFFC9A900)
+                                  : book.sourceType == 'deleted_material'
+                                  ? Theme.of(context).colorScheme.error
+                                  : Theme.of(context).colorScheme.primary,
+                              onTap: () {
+                                if (library.movingWordbookIds.contains(
+                                  book.id,
+                                )) {
+                                  return;
+                                }
+                                if (book.sourceFolderId != null) {
+                                  context.push(
+                                    '/wordbook/folder',
+                                    extra: {
+                                      'folderId': book.sourceFolderId,
+                                      'title': book.name,
+                                    },
+                                  );
+                                  return;
+                                }
+                                context.push(
+                                  '/wordbook/detail',
+                                  extra: {
+                                    'wordbookId': book.id,
+                                    'title': book.name,
+                                  },
+                                );
+                              },
+                              onMenuSelected:
+                                  library.movingWordbookIds.contains(book.id)
+                                  ? null
+                                  : (action) => _handleAction(action, book),
+                              isLoading: library.movingWordbookIds.contains(
+                                book.id,
+                              ),
+                              isFolder: book.sourceFolderId != null,
+                              itemCount: book.sourceFolderId != null
+                                  ? _folderWordCount(
+                                      book.sourceFolderId!,
+                                      library,
+                                    )
+                                  : book.wordCount,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -549,62 +607,68 @@ class _WordbookTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.sizeOf(context).width;
-    final tileWidth = width >= 1180
-        ? 330.0
-        : width >= 760
-        ? 300.0
-        : width - 48;
-    return SizedBox(
-      width: tileWidth,
-      height: 180,
-      child: isFolder
-          ? Stack(
-              clipBehavior: Clip.none,
-              children: [
-                if (itemCount > 0)
-                  Positioned(
-                    left: 10,
-                    right: 10,
-                    top: 8,
-                    child: Container(
-                      height: 152,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        border: Border.all(color: const Color(0xFFC4C6CD)),
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Color(0x180B1C2C),
-                            blurRadius: 20,
-                            offset: Offset(0, 7),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final tileWidth = width >= 1180
+            ? 330.0
+            : width >= 760
+            ? 300.0
+            : width;
+        final textScale = MediaQuery.textScalerOf(context).scale(1);
+        final compactHeight = 200.0 + ((textScale - 1).clamp(0, 1) * 70);
+        return SizedBox(
+          width: tileWidth,
+          height: width < 760 ? compactHeight : 180,
+          child: isFolder
+              ? Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    if (itemCount > 0)
+                      Positioned(
+                        left: 10,
+                        right: 10,
+                        top: 8,
+                        child: Container(
+                          height: 152,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border.all(color: const Color(0xFFC4C6CD)),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Color(0x180B1C2C),
+                                blurRadius: 20,
+                                offset: Offset(0, 7),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
+                      ),
+                    Positioned.fill(
+                      child: PhysicalShape(
+                        clipper: const _FolderCardClipper(),
+                        color: const Color(0xFFD4E3FF),
+                        shadowColor: const Color(0x990B1C2C),
+                        elevation: 10,
+                        child: Material(
+                          type: MaterialType.transparency,
+                          child: CustomPaint(
+                            foregroundPainter: const _FolderOutlinePainter(),
+                            child: _buildCardContent(context),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                Positioned.fill(
-                  child: PhysicalShape(
-                    clipper: const _FolderCardClipper(),
-                    color: const Color(0xFFD4E3FF),
-                    shadowColor: const Color(0x990B1C2C),
-                    elevation: 10,
-                    child: Material(
-                      type: MaterialType.transparency,
-                      child: CustomPaint(
-                        foregroundPainter: const _FolderOutlinePainter(),
-                        child: _buildCardContent(context),
-                      ),
-                    ),
-                  ),
+                  ],
+                )
+              : Card(
+                  color: isFolder ? const Color(0xFFD4E3FF) : Colors.white,
+                  shadowColor: const Color(0x520B1C2C),
+                  elevation: 7,
+                  child: _buildCardContent(context),
                 ),
-              ],
-            )
-          : Card(
-              color: isFolder ? const Color(0xFFD4E3FF) : Colors.white,
-              shadowColor: const Color(0x520B1C2C),
-              elevation: 7,
-              child: _buildCardContent(context),
-            ),
+        );
+      },
     );
   }
 

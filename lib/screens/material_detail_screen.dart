@@ -12,6 +12,7 @@ import '../providers/material_library_provider.dart';
 import '../providers/words_provider.dart';
 import '../providers/wordbook_library_provider.dart';
 import '../services/app_session.dart';
+import '../services/app_messenger.dart';
 import '../services/vocamine_api_client.dart';
 import '../utils/part_of_speech_label.dart';
 import '../widgets/square_progress_indicator.dart';
@@ -19,7 +20,7 @@ import '../widgets/academic_tag.dart';
 
 enum _MaterialDisplayMode { original, text }
 
-enum _SidePanelMode { selection, unknown, known, all }
+enum _SidePanelMode { selection, unknown, untranslated, known, all }
 
 final Map<String, String?> _materialDefaultWordbookCache = {};
 final Map<String, Set<int>> _registeredMeaningIdsByMaterial = {};
@@ -402,16 +403,11 @@ class _MaterialDetailScreenState extends ConsumerState<MaterialDetailScreen> {
     try {
       final updated = await VocamineApiClient().regenerateMissingJapanese(ids);
       await _lookupCache.reloadStoredMeanings(_materialItems);
+      AppMessenger.show('$updated件の日本語訳を再生成しました');
       if (!mounted) return;
       setState(() {});
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$updated件の日本語訳を再生成しました')));
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('日本語訳の再生成に失敗しました: $error')));
+      AppMessenger.show('日本語訳の再生成に失敗しました: $error');
     } finally {
       if (mounted) setState(() => _regeneratingJapanese = false);
     }
@@ -1364,7 +1360,15 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     final result = _result;
     final panelItems = switch (widget.sidePanelMode) {
       _SidePanelMode.unknown =>
-        result?.items.where((item) => !item.isLearned).toList() ?? const [],
+        result?.items
+                .where((item) => !item.isLearned && item.hasMeaning)
+                .toList() ??
+            const [],
+      _SidePanelMode.untranslated =>
+        result?.items
+                .where((item) => !item.isLearned && !item.hasMeaning)
+                .toList() ??
+            const [],
       _SidePanelMode.known =>
         result?.items.where((item) => item.isLearned).toList() ?? const [],
       _SidePanelMode.all => result?.items ?? const [],
@@ -1372,6 +1376,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     };
     final panelTitle = switch (widget.sidePanelMode) {
       _SidePanelMode.unknown => '未知語',
+      _SidePanelMode.untranslated => '訳なし',
       _SidePanelMode.known => '既知語',
       _SidePanelMode.all => '全体',
       _ => '選択範囲',
@@ -1383,6 +1388,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       material: widget.material,
       onAdded: () {
         ref.read(wordsProvider.notifier).load(isLearned: false);
+        ref.read(wordbookLibraryProvider.notifier).load(force: true);
         ref
             .read(materialLibraryProvider.notifier)
             .analyzeMaterial(widget.material.id, force: true);
@@ -1919,6 +1925,9 @@ class _AnalysisHeader extends StatelessWidget {
       ),
       data: (result) {
         final percent = (result.coverageRate * 100).round();
+        final untranslatedCount = result.items
+            .where((item) => !item.isLearned && !item.hasMeaning)
+            .length;
         return Container(
           width: double.infinity,
           color: Colors.white,
@@ -1972,7 +1981,7 @@ class _AnalysisHeader extends StatelessWidget {
                               icon: Icons.format_list_bulleted,
                               backgroundColor: const Color(0xFFD4E3FF),
                               foregroundColor: const Color(0xFF004883),
-                              label: Text('全体 ${result.totalWords}'),
+                              label: Text('全体 ${result.items.length}'),
                             ),
                             _AnalysisFilterButton(
                               onPressed: () =>
@@ -1989,6 +1998,14 @@ class _AnalysisHeader extends StatelessWidget {
                               label: Text('未知 ${result.unknownCount}'),
                               onPressed: () =>
                                   onShowItems(_SidePanelMode.unknown),
+                            ),
+                            _AnalysisFilterButton(
+                              icon: Icons.translate_outlined,
+                              backgroundColor: const Color(0xFFD4E3FF),
+                              foregroundColor: const Color(0xFF004883),
+                              label: Text('訳なし $untranslatedCount'),
+                              onPressed: () =>
+                                  onShowItems(_SidePanelMode.untranslated),
                             ),
                           ],
                         ),
@@ -2157,6 +2174,7 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
       widget.material,
       forceSelection: forceWordbook,
     );
+    if (!mounted) return;
     if (wordbookId == null) return;
     final wordbookName = _wordbookName(context, wordbookId);
     setState(() => _isAdding = true);
@@ -2170,16 +2188,11 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
         sourceLabel: widget.material.title,
         wordbookId: wordbookId,
       );
+      AppMessenger.show('「$wordbookName」に一括登録しました');
       if (!mounted) return;
       widget.onAdded();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('「$wordbookName」に一括登録しました')));
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('一括登録に失敗しました: $error')));
+      AppMessenger.show('一括登録に失敗しました: $error');
     } finally {
       if (mounted) {
         setState(() => _isAdding = false);
@@ -2325,19 +2338,12 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
         sourceFolderId: widget.material.folderId,
         sourceLabel: widget.material.title,
       );
+      AppMessenger.show('学習済み単語に追加しました');
       if (!mounted) return;
       setState(() => _isKnown = true);
       widget.onAdded();
-      if (!widget.hostContext.mounted) return;
-      ScaffoldMessenger.of(
-        widget.hostContext,
-      ).showSnackBar(const SnackBar(content: Text('学習済み単語に追加しました')));
     } catch (error) {
-      if (widget.hostContext.mounted) {
-        ScaffoldMessenger.of(
-          widget.hostContext,
-        ).showSnackBar(SnackBar(content: Text('学習済みへの追加に失敗しました: $error')));
-      }
+      AppMessenger.show('学習済みへの追加に失敗しました: $error');
     } finally {
       if (mounted) setState(() => _isMarkingKnown = false);
     }
@@ -2366,13 +2372,10 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
         anchorRect: forceWordbook ? null : widget.anchorRect,
         tapRegionGroupId: forceWordbook ? null : widget.tapRegionGroupId,
       );
+      if (!mounted || !hostContext.mounted) return;
     } catch (error) {
       if (mounted) setState(() => _adding.remove(meaningId));
-      if (hostContext.mounted) {
-        ScaffoldMessenger.of(
-          hostContext,
-        ).showSnackBar(SnackBar(content: Text('登録先の取得に失敗しました: $error')));
-      }
+      AppMessenger.show('登録先の取得に失敗しました: $error');
       return;
     }
     if (wordbookId == null) {
@@ -2392,20 +2395,15 @@ class _MeaningPopoverState extends State<_MeaningPopover> {
         sourceLabel: material.title,
         wordbookId: wordbookId,
       );
+      AppMessenger.show('「$wordbookName」に追加しました');
+      if (!mounted || !hostContext.mounted) return;
       _registeredMeaningIdsByMaterial
           .putIfAbsent(material.id, () => <int>{})
           .add(meaningId);
       onAdded();
-      if (!hostContext.mounted) return;
-      ScaffoldMessenger.of(
-        hostContext,
-      ).showSnackBar(SnackBar(content: Text('「$wordbookName」に追加しました')));
     } catch (error) {
       if (mounted) setState(() => _added.remove(meaningId));
-      if (!hostContext.mounted) return;
-      ScaffoldMessenger.of(
-        hostContext,
-      ).showSnackBar(SnackBar(content: Text('追加に失敗しました: $error')));
+      AppMessenger.show('追加に失敗しました: $error');
     } finally {
       if (mounted) setState(() => _adding.remove(meaningId));
     }
@@ -2799,6 +2797,7 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
       widget.material,
       forceSelection: forceWordbook,
     );
+    if (!mounted) return;
     if (wordbookId == null) return;
     final wordbookName = _wordbookName(context, wordbookId);
     setState(() => _adding.add(meaningId));
@@ -2812,20 +2811,16 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
         sourceLabel: widget.material.title,
         wordbookId: wordbookId,
       );
+      AppMessenger.show('「$wordbookName」に追加しました');
+      if (!mounted) return;
       _registeredMeaningIdsByMaterial
           .putIfAbsent(widget.material.id, () => <int>{})
           .add(meaningId);
       if (!mounted) return;
       setState(() => _added.add(meaningId));
       widget.onAdded();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('「$wordbookName」に追加しました')));
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('追加に失敗しました: $error')));
+      AppMessenger.show('追加に失敗しました: $error');
     } finally {
       if (mounted) {
         setState(() => _adding.remove(meaningId));
@@ -2846,17 +2841,12 @@ class _SelectionMeaningTileState extends State<_SelectionMeaningTile> {
         sourceFolderId: widget.material.folderId,
         sourceLabel: widget.material.title,
       );
+      AppMessenger.show('学習済み単語に追加しました');
       if (!mounted) return;
       setState(() => _isKnown = true);
       widget.onAdded();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('学習済み単語に追加しました')));
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('学習済みへの追加に失敗しました: $error')));
+      AppMessenger.show('学習済みへの追加に失敗しました: $error');
     } finally {
       if (mounted) setState(() => _isMarkingKnown = false);
     }
@@ -3011,17 +3001,12 @@ class _MeaningSheetState extends State<_MeaningSheet> {
         userId: widget.userId,
         meaningId: meaningId,
       );
+      AppMessenger.show('単語帳に追加しました');
       if (!mounted) return;
       setState(() => _added.add(meaningId));
       widget.onAdded();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('単語帳に追加しました')));
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('追加に失敗しました: $error')));
+      AppMessenger.show('追加に失敗しました: $error');
     } finally {
       if (mounted) {
         setState(() => _adding.remove(meaningId));

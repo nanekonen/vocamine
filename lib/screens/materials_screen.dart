@@ -11,6 +11,7 @@ import '../models/folder.dart';
 import '../providers/material_library_provider.dart';
 import '../services/browser_context_menu_lease.dart';
 import '../services/app_session.dart';
+import '../services/app_messenger.dart';
 import '../services/vocamine_api_client.dart';
 import '../widgets/square_progress_indicator.dart';
 
@@ -229,6 +230,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     if (title == null) return;
 
     final pendingId = _showPendingImport(title);
+    final library = ref.read(materialLibraryProvider.notifier);
     setState(() => _isImporting = true);
     try {
       final bytes = await image.readAsBytes();
@@ -236,23 +238,18 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
         bytes: bytes,
         filename: image.name,
       );
-      if (!context.mounted) return;
-      await ref
-          .read(materialLibraryProvider.notifier)
-          .addMaterial(
-            title,
-            extraction.text,
-            sourceBytes: bytes,
-            sourceMimeType: image.mimeType ?? _mimeTypeForName(image.name),
-            sourceWordBoxes: extraction.wordBoxes,
-            folderId: widget.folderId,
-            analyzeImmediately: true,
-          );
+      await library.addMaterial(
+        title,
+        extraction.text,
+        sourceBytes: bytes,
+        sourceMimeType: image.mimeType ?? _mimeTypeForName(image.name),
+        sourceWordBoxes: extraction.wordBoxes,
+        folderId: widget.folderId,
+        analyzeImmediately: true,
+      );
+      AppMessenger.show('「$title」を追加しました');
     } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('OCRに失敗しました: $error')));
+      AppMessenger.show('OCRに失敗しました: $error');
     } finally {
       if (mounted) {
         _hidePendingImport(pendingId);
@@ -274,30 +271,26 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     if (title == null) return;
 
     final pendingId = _showPendingImport(title);
+    final library = ref.read(materialLibraryProvider.notifier);
     setState(() => _isImporting = true);
     try {
       final extraction = await _api.extractTextFromPdf(
         bytes: bytes,
         filename: file.name,
       );
-      if (!context.mounted) return;
-      await ref
-          .read(materialLibraryProvider.notifier)
-          .addMaterial(
-            title,
-            extraction.text,
-            sourceBytes: bytes,
-            sourceMimeType: _mimeTypeForName(file.name),
-            sourcePageImages: extraction.pageImages,
-            sourceWordBoxes: extraction.wordBoxes,
-            folderId: widget.folderId,
-            analyzeImmediately: true,
-          );
+      await library.addMaterial(
+        title,
+        extraction.text,
+        sourceBytes: bytes,
+        sourceMimeType: _mimeTypeForName(file.name),
+        sourcePageImages: extraction.pageImages,
+        sourceWordBoxes: extraction.wordBoxes,
+        folderId: widget.folderId,
+        analyzeImmediately: true,
+      );
+      AppMessenger.show('「$title」を追加しました');
     } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('PDFの読み込みに失敗しました: $error')));
+      AppMessenger.show('PDFの読み込みに失敗しました: $error');
     } finally {
       if (mounted) {
         _hidePendingImport(pendingId);
@@ -366,15 +359,9 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       await ref
           .read(materialLibraryProvider.notifier)
           .deleteMaterial(material.id);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('教材を削除しました')));
+      AppMessenger.show('教材を削除しました');
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('教材の削除に失敗しました: $error')));
+      AppMessenger.show('教材の削除に失敗しました: $error');
     }
   }
 
@@ -409,11 +396,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
           .read(materialLibraryProvider.notifier)
           .renameMaterial(material.id, title);
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('名前の変更に失敗しました: $error')));
-      }
+      AppMessenger.show('名前の変更に失敗しました: $error');
     }
   }
 
@@ -448,11 +431,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
           .read(materialLibraryProvider.notifier)
           .moveMaterial(material.id, folderId == '__root__' ? null : folderId);
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('移動に失敗しました: $error')));
-      }
+      AppMessenger.show('移動に失敗しました: $error');
     }
   }
 
@@ -536,17 +515,9 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
             pageImages: images,
             wordBoxes: boxes,
           );
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('ページを追加しました')));
-      }
+      AppMessenger.show('ページを追加しました');
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('ページの追加に失敗しました: $error')));
-      }
+      AppMessenger.show('ページの追加に失敗しました: $error');
     } finally {
       if (mounted) setState(() => _isImporting = false);
     }
@@ -594,11 +565,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
           .read(materialLibraryProvider.notifier)
           .renameFolder(folder.id, name);
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('名前の変更に失敗しました: $error')));
-      }
+      AppMessenger.show('名前の変更に失敗しました: $error');
     }
   }
 
@@ -633,11 +600,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
           .read(materialLibraryProvider.notifier)
           .moveFolder(folder.id, parentId == '__root__' ? null : parentId);
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('移動に失敗しました: $error')));
-      }
+      AppMessenger.show('移動に失敗しました: $error');
     }
   }
 
@@ -663,11 +626,7 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     try {
       await ref.read(materialLibraryProvider.notifier).deleteFolder(folder.id);
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('フォルダの削除に失敗しました: $error')));
-      }
+      AppMessenger.show('フォルダの削除に失敗しました: $error');
     }
   }
 
@@ -743,9 +702,6 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(materialLibraryProvider);
-    final horizontalPadding = MediaQuery.sizeOf(context).width >= 900
-        ? 40.0
-        : 16.0;
     final folders = library.folders
         .where((f) => f.parentId == widget.folderId)
         .toList();
@@ -755,165 +711,204 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     final pendingImports = _pendingImports.values
         .where((pending) => pending.folderId == widget.folderId)
         .toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        actions: [
-          TextButton.icon(
-            icon: const Icon(Icons.upload_file_outlined),
-            label: const Text('教材を読み込む'),
-            onPressed: _isImporting
-                ? null
-                : () => _showImportMenu(context, ref),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final horizontalPadding = constraints.maxWidth >= 900 ? 40.0 : 16.0;
+        final compact = constraints.maxWidth < 600;
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(widget.title),
+            actions: [
+              if (compact)
+                PopupMenuButton<String>(
+                  tooltip: '教材メニュー',
+                  onSelected: (action) {
+                    if (action == 'import') _showImportMenu(context, ref);
+                    if (action == 'folder') _createFolder(context, ref);
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'import',
+                      enabled: !_isImporting,
+                      child: const ListTile(
+                        leading: Icon(Icons.upload_file_outlined),
+                        title: Text('教材を読み込む'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'folder',
+                      child: ListTile(
+                        leading: Icon(Icons.create_new_folder_outlined),
+                        title: Text('フォルダを作成'),
+                      ),
+                    ),
+                  ],
+                )
+              else ...[
+                TextButton.icon(
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: const Text('教材を読み込む'),
+                  onPressed: _isImporting
+                      ? null
+                      : () => _showImportMenu(context, ref),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                  label: const Text('フォルダを作成'),
+                  onPressed: () => _createFolder(context, ref),
+                ),
+              ],
+            ],
           ),
-          TextButton.icon(
-            icon: const Icon(Icons.create_new_folder_outlined),
-            label: const Text('フォルダを作成'),
-            onPressed: () => _createFolder(context, ref),
-          ),
-        ],
-      ),
-      body: ColoredBox(
-        color: const Color(0xFFF7F9FB),
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onSecondaryTapDown: (details) =>
-              _showBackgroundMenu(details.globalPosition),
-          child:
-              (folders.isEmpty && materials.isEmpty && pendingImports.isEmpty)
-              ? const Center(child: Text('教材がまだありません'))
-              : ListView(
-                  padding: EdgeInsets.fromLTRB(
-                    horizontalPadding,
-                    24,
-                    horizontalPadding,
-                    96,
-                  ),
-                  children: [
-                    Wrap(
-                      spacing: 24,
-                      runSpacing: 24,
+          body: ColoredBox(
+            color: const Color(0xFFF7F9FB),
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onSecondaryTapDown: (details) =>
+                  _showBackgroundMenu(details.globalPosition),
+              child:
+                  (folders.isEmpty &&
+                      materials.isEmpty &&
+                      pendingImports.isEmpty)
+                  ? const Center(child: Text('教材がまだありません'))
+                  : ListView(
+                      padding: EdgeInsets.fromLTRB(
+                        horizontalPadding,
+                        24,
+                        horizontalPadding,
+                        96,
+                      ),
                       children: [
-                        ...folders.map(
-                          (folder) => GestureDetector(
-                            onSecondaryTapDown: (_) {},
-                            child: _LibraryTile(
-                              icon: Icons.folder_outlined,
-                              title: folder.name,
-                              subtitle: 'フォルダ',
-                              accentColor: const Color(0xFFC9A900),
-                              onTap: () => context.push(
-                                '/materials/folder',
-                                extra: {
-                                  'folderId': folder.id,
-                                  'title': folder.name,
-                                },
-                              ),
-                              onMenuSelected: (action) =>
-                                  _handleFolderAction(action, folder),
-                              isFolder: true,
-                              itemCount: _materialFolderCount(
-                                folder.id,
-                                library,
-                              ),
-                            ),
-                          ),
-                        ),
-                        ...pendingImports.map(
-                          (pending) => _LibraryTile(
-                            icon: Icons.hourglass_top,
-                            title: pending.title,
-                            subtitle: '教材読み込み中…',
-                            accentColor: Theme.of(
-                              context,
-                            ).colorScheme.secondary,
-                            onTap: () {},
-                            isLoading: true,
-                            itemCount: 0,
-                          ),
-                        ),
-                        ...materials.map(
-                          (material) => GestureDetector(
-                            onSecondaryTapDown: (_) {},
-                            child: _LibraryTile(
-                              icon:
-                                  library.movingMaterialIds.contains(
-                                    material.id,
-                                  )
-                                  ? Icons.drive_file_move_outline
-                                  : Icons.description_outlined,
-                              title: material.title,
-                              subtitle:
-                                  library.movingMaterialIds.contains(
-                                    material.id,
-                                  )
-                                  ? '移動中…'
-                                  : _materialSubtitle(material, library),
-                              accentColor:
-                                  library.analyses[material.id] is AsyncError
-                                  ? Theme.of(context).colorScheme.error
-                                  : Theme.of(context).colorScheme.secondary,
-                              onTap:
-                                  library.movingMaterialIds.contains(
-                                    material.id,
-                                  )
-                                  ? () {}
-                                  : () {
-                                      final userId = ref
-                                          .read(appSessionProvider)
-                                          .userId;
-                                      unawaited(
-                                        _api.updateRecentMaterial(
-                                          userId: userId,
-                                          materialId: material.id,
-                                        ),
-                                      );
-                                      context.push(
-                                        '/materials/detail',
-                                        extra: {
-                                          'materialId': material.id,
-                                          'title': material.title,
-                                        },
-                                      );
+                        Wrap(
+                          spacing: 24,
+                          runSpacing: 24,
+                          children: [
+                            ...folders.map(
+                              (folder) => GestureDetector(
+                                onSecondaryTapDown: (_) {},
+                                child: _LibraryTile(
+                                  icon: Icons.folder_outlined,
+                                  title: folder.name,
+                                  subtitle: 'フォルダ',
+                                  accentColor: const Color(0xFFC9A900),
+                                  onTap: () => context.push(
+                                    '/materials/folder',
+                                    extra: {
+                                      'folderId': folder.id,
+                                      'title': folder.name,
                                     },
-                              onMenuSelected:
-                                  library.movingMaterialIds.contains(
-                                    material.id,
-                                  )
-                                  ? null
-                                  : (action) =>
-                                        _handleMaterialAction(action, material),
-                              showPageAction: true,
-                              isLoading: library.movingMaterialIds.contains(
-                                material.id,
+                                  ),
+                                  onMenuSelected: (action) =>
+                                      _handleFolderAction(action, folder),
+                                  isFolder: true,
+                                  itemCount: _materialFolderCount(
+                                    folder.id,
+                                    library,
+                                  ),
+                                ),
                               ),
-                              coveragePercent:
-                                  library.analyses[material.id]?.value == null
-                                  ? null
-                                  : (library
-                                                .analyses[material.id]!
-                                                .value!
-                                                .coverageRate *
-                                            100)
-                                        .round(),
-                              unknownCount: library
-                                  .analyses[material.id]
-                                  ?.value
-                                  ?.unknownCount,
-                              itemCount: 1,
-                              previewBytes: material.sourcePageImages.isNotEmpty
-                                  ? material.sourcePageImages.first
-                                  : null,
                             ),
-                          ),
+                            ...materials.map(
+                              (material) => GestureDetector(
+                                onSecondaryTapDown: (_) {},
+                                child: _LibraryTile(
+                                  icon:
+                                      library.movingMaterialIds.contains(
+                                        material.id,
+                                      )
+                                      ? Icons.drive_file_move_outline
+                                      : Icons.description_outlined,
+                                  title: material.title,
+                                  subtitle:
+                                      library.movingMaterialIds.contains(
+                                        material.id,
+                                      )
+                                      ? '移動中…'
+                                      : _materialSubtitle(material, library),
+                                  accentColor:
+                                      library.analyses[material.id]
+                                          is AsyncError
+                                      ? Theme.of(context).colorScheme.error
+                                      : Theme.of(context).colorScheme.secondary,
+                                  onTap:
+                                      library.movingMaterialIds.contains(
+                                        material.id,
+                                      )
+                                      ? () {}
+                                      : () {
+                                          final userId = ref
+                                              .read(appSessionProvider)
+                                              .userId;
+                                          unawaited(
+                                            _api.updateRecentMaterial(
+                                              userId: userId,
+                                              materialId: material.id,
+                                            ),
+                                          );
+                                          context.push(
+                                            '/materials/detail',
+                                            extra: {
+                                              'materialId': material.id,
+                                              'title': material.title,
+                                            },
+                                          );
+                                        },
+                                  onMenuSelected:
+                                      library.movingMaterialIds.contains(
+                                        material.id,
+                                      )
+                                      ? null
+                                      : (action) => _handleMaterialAction(
+                                          action,
+                                          material,
+                                        ),
+                                  showPageAction: true,
+                                  isLoading: library.movingMaterialIds.contains(
+                                    material.id,
+                                  ),
+                                  coveragePercent:
+                                      library.analyses[material.id]?.value ==
+                                          null
+                                      ? null
+                                      : (library
+                                                    .analyses[material.id]!
+                                                    .value!
+                                                    .coverageRate *
+                                                100)
+                                            .round(),
+                                  unknownCount: library
+                                      .analyses[material.id]
+                                      ?.value
+                                      ?.unknownCount,
+                                  itemCount: 1,
+                                  previewBytes:
+                                      material.sourcePageImages.isNotEmpty
+                                      ? material.sourcePageImages.first
+                                      : null,
+                                ),
+                              ),
+                            ),
+                            ...pendingImports.map(
+                              (pending) => _LibraryTile(
+                                icon: Icons.hourglass_top,
+                                title: pending.title,
+                                subtitle: '教材読み込み中…',
+                                accentColor: Theme.of(
+                                  context,
+                                ).colorScheme.secondary,
+                                onTap: () {},
+                                isLoading: true,
+                                itemCount: 0,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
-                ),
-        ),
-      ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -951,273 +946,285 @@ class _LibraryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.sizeOf(context).width;
-    final tileWidth = width >= 1180
-        ? 360.0
-        : width >= 760
-        ? 330.0
-        : width - 48;
-    if (isFolder) {
-      return SizedBox(
-        width: tileWidth,
-        height: 210,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            if (itemCount > 0)
-              Positioned(
-                left: 10,
-                right: 10,
-                top: 8,
-                child: Container(
-                  height: 180,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: const Color(0xFFC4C6CD)),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x180B1C2C),
-                        blurRadius: 20,
-                        offset: Offset(0, 7),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            Positioned.fill(
-              child: PhysicalShape(
-                clipper: const _MaterialFolderClipper(),
-                color: const Color(0xFFD4E3FF),
-                shadowColor: const Color(0x990B1C2C),
-                elevation: 10,
-                child: CustomPaint(
-                  foregroundPainter: const _MaterialFolderOutlinePainter(),
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: onTap,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 38, 16, 0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    title,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleMedium,
-                                  ),
-                                ),
-                                if (onMenuSelected != null)
-                                  PopupMenuButton<String>(
-                                    tooltip: '教材の操作',
-                                    onSelected: onMenuSelected,
-                                    itemBuilder: _materialMenuItems,
-                                  ),
-                              ],
-                            ),
-                          ),
-                          const Divider(height: 1),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            child: Text(
-                              '$itemCount件の教材',
-                              style: Theme.of(context).textTheme.labelMedium,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    return SizedBox(
-      width: tileWidth,
-      height: 210,
-      child: Card(
-        color: Colors.white,
-        shadowColor: const Color(0x520B1C2C),
-        elevation: 7,
-        child: InkWell(
-          borderRadius: BorderRadius.zero,
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final tileWidth = width >= 1180
+            ? 360.0
+            : width >= 760
+            ? 330.0
+            : width;
+        final textScale = MediaQuery.textScalerOf(context).scale(1);
+        final compactHeight = 250.0 + ((textScale - 1).clamp(0, 1) * 80);
+        if (isFolder) {
+          return SizedBox(
+            width: tileWidth,
+            height: 210,
+            child: Stack(
+              clipBehavior: Clip.none,
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      width: 104,
-                      height: 76,
-                      child: Transform.translate(
-                        offset: const Offset(0, -24),
-                        child: OverflowBox(
-                          minWidth: 128,
-                          maxWidth: 128,
-                          minHeight: 210,
-                          maxHeight: 210,
-                          alignment: Alignment.topRight,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF2F4F6),
-                              borderRadius: BorderRadius.zero,
-                              border: Border.all(
-                                color: const Color(0xFFDDE3EA),
-                              ),
-                            ),
-                            child: isLoading
-                                ? Padding(
-                                    padding: const EdgeInsets.all(14),
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: accentColor,
-                                    ),
-                                  )
-                                : previewBytes != null
-                                ? ClipRect(
-                                    child: Transform.scale(
-                                      scale: 1.75,
-                                      alignment: Alignment.topLeft,
-                                      child: Image.memory(
-                                        previewBytes!,
-                                        width: 128,
-                                        height: 210,
-                                        fit: BoxFit.cover,
-                                        alignment: Alignment.topLeft,
-                                      ),
-                                    ),
-                                  )
-                                : const Center(
-                                    child: Text(
-                                      'MATERIAL',
-                                      style: TextStyle(
-                                        letterSpacing: 1.1,
-                                        fontWeight: FontWeight.w600,
-                                        color: Color(0xFF38485A),
-                                      ),
-                                    ),
-                                  ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            subtitle,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                ),
+                if (itemCount > 0)
+                  Positioned(
+                    left: 10,
+                    right: 10,
+                    top: 8,
+                    child: Container(
+                      height: 180,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: const Color(0xFFC4C6CD)),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x180B1C2C),
+                            blurRadius: 20,
+                            offset: Offset(0, 7),
                           ),
                         ],
                       ),
                     ),
-                    if (onMenuSelected != null)
-                      PopupMenuButton<String>(
-                        color: Colors.white,
-                        iconColor: const Color(0xFF44474C),
-                        tooltip: '教材の操作',
-                        onSelected: onMenuSelected,
-                        itemBuilder: _materialMenuItems,
-                      ),
-                  ],
-                ),
-                const Spacer(),
-                const Padding(
-                  padding: EdgeInsets.only(left: 112),
-                  child: Divider(color: Color(0xFFDDE3EA)),
-                ),
-                const SizedBox(height: 12),
-                Padding(
-                  padding: const EdgeInsets.only(left: 112),
-                  child: Row(
-                    children: [
-                      SquareProgressIndicator(
-                        value: (coveragePercent ?? 0) / 100,
-                        size: 64,
-                        strokeWidth: 6,
-                        color: const Color(0xFF0060AC),
-                        backgroundColor: const Color(0xFFDDE3EA),
-                        child: Text.rich(
-                          TextSpan(
+                  ),
+                Positioned.fill(
+                  child: PhysicalShape(
+                    clipper: const _MaterialFolderClipper(),
+                    color: const Color(0xFFD4E3FF),
+                    shadowColor: const Color(0x990B1C2C),
+                    elevation: 10,
+                    child: CustomPaint(
+                      foregroundPainter: const _MaterialFolderOutlinePainter(),
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: onTap,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 38, 16, 0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              TextSpan(
-                                text: coveragePercent == null
-                                    ? '--'
-                                    : '$coveragePercent',
-                                style: const TextStyle(
-                                  color: Color(0xFF0060AC),
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w800,
+                              Expanded(
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        title,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleMedium,
+                                      ),
+                                    ),
+                                    if (onMenuSelected != null)
+                                      PopupMenuButton<String>(
+                                        tooltip: '教材の操作',
+                                        onSelected: onMenuSelected,
+                                        itemBuilder: _materialMenuItems,
+                                      ),
+                                  ],
                                 ),
                               ),
-                              const TextSpan(
-                                text: '%',
-                                style: TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 18,
+                              const Divider(height: 1),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
+                                child: Text(
+                                  '$itemCount件の教材',
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.labelMedium,
                                 ),
                               ),
                             ],
                           ),
                         ),
                       ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '習得語彙率: ${coveragePercent ?? '--'}%',
-                              style: const TextStyle(
-                                color: Color(0xFF041627),
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              '未知語数: ${unknownCount ?? '--'}',
-                              style: const TextStyle(color: Color(0xFF44474C)),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ],
             ),
+          );
+        }
+        return SizedBox(
+          width: tileWidth,
+          height: width < 760 ? compactHeight : 210,
+          child: Card(
+            color: Colors.white,
+            shadowColor: const Color(0x520B1C2C),
+            elevation: 7,
+            child: InkWell(
+              borderRadius: BorderRadius.zero,
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 104,
+                          height: 76,
+                          child: Transform.translate(
+                            offset: const Offset(0, -24),
+                            child: OverflowBox(
+                              minWidth: 128,
+                              maxWidth: 128,
+                              minHeight: 210,
+                              maxHeight: 210,
+                              alignment: Alignment.topRight,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF2F4F6),
+                                  borderRadius: BorderRadius.zero,
+                                  border: Border.all(
+                                    color: const Color(0xFFDDE3EA),
+                                  ),
+                                ),
+                                child: isLoading
+                                    ? Padding(
+                                        padding: const EdgeInsets.all(14),
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: accentColor,
+                                        ),
+                                      )
+                                    : previewBytes != null
+                                    ? ClipRect(
+                                        child: Transform.scale(
+                                          scale: 1.75,
+                                          alignment: Alignment.topLeft,
+                                          child: Image.memory(
+                                            previewBytes!,
+                                            width: 128,
+                                            height: 210,
+                                            fit: BoxFit.cover,
+                                            alignment: Alignment.topLeft,
+                                          ),
+                                        ),
+                                      )
+                                    : const Center(
+                                        child: Text(
+                                          'MATERIAL',
+                                          style: TextStyle(
+                                            letterSpacing: 1.1,
+                                            fontWeight: FontWeight.w600,
+                                            color: Color(0xFF38485A),
+                                          ),
+                                        ),
+                                      ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                subtitle,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (onMenuSelected != null)
+                          PopupMenuButton<String>(
+                            color: Colors.white,
+                            iconColor: const Color(0xFF44474C),
+                            tooltip: '教材の操作',
+                            onSelected: onMenuSelected,
+                            itemBuilder: _materialMenuItems,
+                          ),
+                      ],
+                    ),
+                    const Spacer(),
+                    const Padding(
+                      padding: EdgeInsets.only(left: 112),
+                      child: Divider(color: Color(0xFFDDE3EA)),
+                    ),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 112),
+                      child: Row(
+                        children: [
+                          SquareProgressIndicator(
+                            value: (coveragePercent ?? 0) / 100,
+                            size: 64,
+                            strokeWidth: 6,
+                            color: const Color(0xFF0060AC),
+                            backgroundColor: const Color(0xFFDDE3EA),
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: coveragePercent == null
+                                        ? '--'
+                                        : '$coveragePercent',
+                                    style: const TextStyle(
+                                      color: Color(0xFF0060AC),
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const TextSpan(
+                                    text: '%',
+                                    style: TextStyle(
+                                      color: Colors.black,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '習得語彙率: ${coveragePercent ?? '--'}%',
+                                  style: const TextStyle(
+                                    color: Color(0xFF041627),
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  '未知語数: ${unknownCount ?? '--'}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF44474C),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 

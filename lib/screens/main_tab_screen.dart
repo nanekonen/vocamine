@@ -70,7 +70,7 @@ class _MainTabScreenState extends State<MainTabScreen> {
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 15),
                         child: Text(
-                          'Vocamine',
+                          'Glossalyze',
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                       ),

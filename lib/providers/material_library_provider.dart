@@ -150,6 +150,7 @@ class MaterialLibraryNotifier extends Notifier<MaterialLibraryState> {
       sourceWordBoxes: sourceWordBoxes,
       folderId: folderId,
     );
+    // 読み込み中カードと同じ末尾位置へ完成した教材を追加する。
     state = state.copyWith(materials: [...state.materials, material]);
     if (analyzeImmediately) {
       unawaited(analyzeMaterial(material.id));

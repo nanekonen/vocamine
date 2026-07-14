@@ -13,6 +13,7 @@ import 'screens/mypage_screen.dart';
 import 'screens/auth_callback_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/app_session.dart';
+import 'services/app_messenger.dart';
 import 'services/supabase_auth_service.dart';
 import 'screens/learned_words_screen.dart';
 
@@ -20,7 +21,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   usePathUrlStrategy();
   await SupabaseAuthService.initialize();
-  runApp(const ProviderScope(child: VocamineApp()));
+  runApp(const ProviderScope(child: GlossalyzeApp()));
 }
 
 final routerProvider = Provider<GoRouter>((ref) {
@@ -132,14 +133,14 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-class VocamineApp extends ConsumerStatefulWidget {
-  const VocamineApp({super.key});
+class GlossalyzeApp extends ConsumerStatefulWidget {
+  const GlossalyzeApp({super.key});
 
   @override
-  ConsumerState<VocamineApp> createState() => _VocamineAppState();
+  ConsumerState<GlossalyzeApp> createState() => _GlossalyzeAppState();
 }
 
-class _VocamineAppState extends ConsumerState<VocamineApp> {
+class _GlossalyzeAppState extends ConsumerState<GlossalyzeApp> {
   @override
   void initState() {
     super.initState();
@@ -150,8 +151,9 @@ class _VocamineAppState extends ConsumerState<VocamineApp> {
   Widget build(BuildContext context) {
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
-      title: 'Vocamine',
+      title: 'Glossalyze',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: AppMessenger.key,
       theme: ThemeData(
         colorScheme: const ColorScheme.light(
           primary: Color(0xFF041627),

@@ -166,7 +166,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
-                          'Vocamine',
+                          'Glossalyze',
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                         const SizedBox(height: 32),
