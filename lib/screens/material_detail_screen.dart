@@ -1043,6 +1043,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   String? _hoveredRangeKey;
   int? _selectionStart;
   int? _selectionEnd;
+  _RelatedPhraseSelection? _relatedPhraseSelection;
   int? _longPressWordStart;
   int? _longPressWordEnd;
   Offset? _longPressStartPosition;
@@ -1067,6 +1068,9 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
   DateTime? _lastPointerDownAt;
   Offset? _lastPointerDownPosition;
   DateTime? _suppressSelectionUntil;
+  int? _markerTapPointer;
+  Offset? _markerTapDownPosition;
+  bool _markerTapWasDouble = false;
 
   ExtractWordsResult? get _result =>
       widget.analysis?.maybeWhen(data: (value) => value, orElse: () => null);
@@ -1076,6 +1080,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     result: _result,
     selectionStart: _selectionStart,
     selectionEnd: _selectionEnd,
+    relatedPhraseSelection: _relatedPhraseSelection,
   );
 
   List<Uint8List> get _sourcePages {
@@ -1201,6 +1206,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       // 確実にマーカーを描画する。
       _selectionStart = focusedRange.start;
       _selectionEnd = focusedRange.end;
+      _relatedPhraseSelection = null;
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1292,6 +1298,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     setState(() {
       _selectionStart = null;
       _selectionEnd = null;
+      _relatedPhraseSelection = null;
     });
     if (widget.sidePanelMode == _SidePanelMode.selection) {
       widget.onSidePanelModeChanged(null);
@@ -1333,7 +1340,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
       hoveredRangeKey: _hoveredRangeKey,
     )) {
       final range = segment.range;
-      final rangeKey = range != null && range.kind == _MarkedRangeKind.word
+      final rangeKey = range != null
           ? _markedRangeKey(range.start, range.end)
           : null;
       final color = segment.visual.backgroundColor;
@@ -1358,25 +1365,15 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     return [TextSpan(style: baseStyle, children: spans)];
   }
 
-  LexicalItemResult? _itemAtTextPosition(
-    Offset localPosition,
-    double maxWidth,
-  ) {
+  _MarkedRange? _rangeAtTextPosition(Offset localPosition, double maxWidth) {
     final text = widget.material.ocrText;
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: _textStyle(context)),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      locale: Localizations.maybeLocaleOf(context),
-      textHeightBehavior: DefaultTextStyle.of(context).textHeightBehavior,
-    )..layout(maxWidth: maxWidth);
-    final offset = painter
-        .getPositionForOffset(localPosition)
-        .offset
-        .clamp(0, text.length)
-        .toInt();
-    if (offset >= text.length) return null;
-    return _learningTextState.wordRangeAtOffset(offset)?.item;
+    final offset = _textOffsetAtPosition(localPosition, maxWidth);
+    if (offset == null || text.isEmpty) return null;
+    final safeOffset = math.min(offset, text.length - 1);
+    return _learningTextState.rangeAtOffset(safeOffset) ??
+        (safeOffset > 0
+            ? _learningTextState.rangeAtOffset(safeOffset - 1)
+            : null);
   }
 
   int? _textOffsetAtPosition(Offset localPosition, double maxWidth) {
@@ -1414,10 +1411,44 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     setState(() {
       _selectionStart = range.start;
       _selectionEnd = range.end;
+      _relatedPhraseSelection = null;
       _longPressWordStart = range.start;
       _longPressWordEnd = range.end;
       _longPressRangeSelection = false;
     });
+  }
+
+  void _activateMarkedRange(
+    _MarkedRange range,
+    Offset globalPosition, {
+    bool revealRelatedPhrase = false,
+  }) {
+    if (range.kind == _MarkedRangeKind.phrase ||
+        range.kind == _MarkedRangeKind.relatedPhrasePart) {
+      final phraseStart = range.phraseStart ?? range.start;
+      final phraseEnd = range.phraseEnd ?? range.end;
+      setState(() {
+        _selectionStart = phraseStart;
+        _selectionEnd = phraseEnd;
+        _relatedPhraseSelection = null;
+        _hoveredRangeKey = _markedRangeKey(phraseStart, phraseEnd);
+      });
+      widget.onSidePanelModeChanged(_SidePanelMode.selection);
+      _showMeaningPopover(range.item, globalPosition, focusOccurrence: false);
+      return;
+    }
+
+    final related = revealRelatedPhrase
+        ? _learningTextState.relatedPhraseForWord(range)
+        : null;
+    setState(() {
+      _selectionStart = range.start;
+      _selectionEnd = range.end;
+      _relatedPhraseSelection = related;
+      _hoveredRangeKey = _markedRangeKey(range.start, range.end);
+    });
+    widget.onSidePanelModeChanged(_SidePanelMode.selection);
+    _showMeaningPopover(range.item, globalPosition, focusOccurrence: false);
   }
 
   void _extendLongPressSelection(int currentOffset) {
@@ -1427,6 +1458,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     setState(() {
       _selectionStart = math.min(currentOffset, wordStart);
       _selectionEnd = math.max(currentOffset, wordEnd);
+      _relatedPhraseSelection = null;
       _longPressRangeSelection = true;
     });
     widget.onSidePanelModeChanged(_SidePanelMode.selection);
@@ -1467,6 +1499,13 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
 
   void _handleTextTouchMove(PointerMoveEvent event, double maxWidth) {
     _handleSourcePointerMove(event);
+    final markerDown = _markerTapDownPosition;
+    if (_markerTapPointer == event.pointer &&
+        markerDown != null &&
+        (event.position - markerDown).distance > 8) {
+      _markerTapPointer = null;
+      _markerTapDownPosition = null;
+    }
     if (_textTouchPointer != event.pointer) return;
     final start = _textTouchStartGlobal;
     if (start == null) return;
@@ -1503,7 +1542,37 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     );
   }
 
+  void _handleTextPointerUp(PointerUpEvent event, double maxWidth) {
+    final shouldActivate =
+        _markerTapPointer == event.pointer &&
+        !_markerTapWasDouble &&
+        !_textLongPressActive;
+    _markerTapPointer = null;
+    _markerTapDownPosition = null;
+    _markerTapWasDouble = false;
+    if (shouldActivate) {
+      final renderBox =
+          _textKey.currentContext?.findRenderObject() as RenderBox?;
+      final range = renderBox == null
+          ? null
+          : _rangeAtTextPosition(
+              renderBox.globalToLocal(event.position),
+              maxWidth,
+            );
+      if (range != null && range.isSingleClickMarker) {
+        _suppressSelectionUntil = DateTime.now().add(
+          const Duration(milliseconds: 300),
+        );
+        _activateMarkedRange(range, event.position);
+      }
+    }
+    _finishTextTouch(event);
+  }
+
   void _handleTextPointerDown(PointerDownEvent event, double maxWidth) {
+    _markerTapPointer = event.pointer;
+    _markerTapDownPosition = event.position;
+    _markerTapWasDouble = false;
     final now = DateTime.now();
     final previousTime = _lastPointerDownAt;
     final previousPosition = _lastPointerDownPosition;
@@ -1515,27 +1584,25 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         now.difference(previousTime) <= const Duration(milliseconds: 360) &&
         (event.position - previousPosition).distance <= 8;
     if (!isDoubleClick) return;
+    _markerTapWasDouble = true;
 
     final renderBox = _textKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
-    final state = _learningTextState;
-    final hoveredItem = _hoveredRangeKey == null
-        ? null
-        : state.rangeForKey(_hoveredRangeKey!)?.item;
-    final item =
-        hoveredItem ??
-        _itemAtTextPosition(renderBox.globalToLocal(event.position), maxWidth);
-    if (item == null) return;
+    final range = _rangeAtTextPosition(
+      renderBox.globalToLocal(event.position),
+      maxWidth,
+    );
+    if (range == null) return;
 
     _suppressSelectionUntil = DateTime.now().add(
       const Duration(milliseconds: 500),
     );
-    setState(() {
-      _selectionStart = null;
-      _selectionEnd = null;
-    });
-    _showMeaningPopover(item, event.position, focusOccurrence: false);
+    _activateMarkedRange(
+      range,
+      event.position,
+      revealRelatedPhrase: range.kind == _MarkedRangeKind.word,
+    );
   }
 
   int? _textOffsetAtSourcePosition(
@@ -1739,7 +1806,9 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
     final range = segment.range;
     final isLexicalRange =
         range?.kind == _MarkedRangeKind.word ||
-        range?.kind == _MarkedRangeKind.phrase;
+        range?.kind == _MarkedRangeKind.phrase ||
+        range?.kind == _MarkedRangeKind.relatedPhrasePart;
+    final isSingleClickMarker = range?.isSingleClickMarker ?? false;
     final rangeKey = isLexicalRange
         ? _markedRangeKey(range!.start, range.end)
         : null;
@@ -1765,12 +1834,16 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
               },
         child: GestureDetector(
           behavior: HitTestBehavior.translucent,
+          onTapUp: !isSingleClickMarker
+              ? null
+              : (details) =>
+                    _activateMarkedRange(range!, details.globalPosition),
           onDoubleTapDown: !isLexicalRange
               ? null
-              : (details) => _showMeaningPopover(
-                  range!.item,
+              : (details) => _activateMarkedRange(
+                  range!,
                   details.globalPosition,
-                  focusOccurrence: false,
+                  revealRelatedPhrase: range.kind == _MarkedRangeKind.word,
                 ),
           child: color == null
               ? const SizedBox.expand()
@@ -2107,7 +2180,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
         behavior: HitTestBehavior.translucent,
         onPointerDown: (event) => _handleTextTouchDown(event, maxWidth),
         onPointerMove: (event) => _handleTextTouchMove(event, maxWidth),
-        onPointerUp: _finishTextTouch,
+        onPointerUp: (event) => _handleTextPointerUp(event, maxWidth),
         onPointerCancel: _finishTextTouch,
         child: SelectableText.rich(
           TextSpan(children: _buildTextSpans(state)),
@@ -2126,6 +2199,7 @@ class _MaterialContentViewState extends ConsumerState<_MaterialContentView> {
             setState(() {
               _selectionStart = selection.start;
               _selectionEnd = selection.end;
+              _relatedPhraseSelection = null;
             });
           },
         ),
@@ -2331,11 +2405,13 @@ class _LearningTextState {
   final ExtractWordsResult? result;
   final int? selectionStart;
   final int? selectionEnd;
+  final _RelatedPhraseSelection? relatedPhraseSelection;
   late final List<_MarkedRange> ranges = _markedRangesForText(
     text: text,
     result: result,
     selectionStart: selectionStart,
     selectionEnd: selectionEnd,
+    relatedPhraseSelection: relatedPhraseSelection,
   );
 
   _LearningTextState({
@@ -2343,6 +2419,7 @@ class _LearningTextState {
     required this.result,
     required this.selectionStart,
     required this.selectionEnd,
+    required this.relatedPhraseSelection,
   });
 
   List<LexicalItemResult> selectedItems() {
@@ -2421,6 +2498,123 @@ class _LearningTextState {
       }
     }
     return null;
+  }
+
+  _MarkedRange? rangeAtOffset(int offset) {
+    _MarkedRange? match;
+    for (final range in ranges) {
+      if (offset < range.start || offset >= range.end) continue;
+      if (match == null ||
+          _rangeKindPriority(range.kind) > _rangeKindPriority(match.kind)) {
+        match = range;
+      }
+    }
+    return match;
+  }
+
+  _RelatedPhraseSelection? relatedPhraseForWord(_MarkedRange wordRange) {
+    if (wordRange.kind != _MarkedRangeKind.word || result == null) return null;
+    final candidates = <_RelatedPhraseSelection>[];
+    final wordItems = result!.items.where((item) => item.kind == 'word');
+
+    for (final phrase in result!.items.where((item) => item.kind == 'phrase')) {
+      final phraseWords = phrase.text
+          .split(RegExp(r'\s+'))
+          .map(_normalizeLookupWord)
+          .where((word) => word.isNotEmpty)
+          .toList();
+      if (phraseWords.length < 2) continue;
+
+      for (final occurrence in phrase.occurrences) {
+        if (!_isValidTextRange(text, occurrence.start, occurrence.end) ||
+            wordRange.start < occurrence.start ||
+            wordRange.end > occurrence.end) {
+          continue;
+        }
+        final available = <_MarkedRange>[];
+        for (final item in wordItems) {
+          final normalizedForms = <String>{
+            _normalizeLookupWord(item.text),
+            ...item.surfaceForms.map(_normalizeLookupWord),
+          };
+          for (final wordOccurrence in item.occurrences) {
+            if (wordOccurrence.start < occurrence.start ||
+                wordOccurrence.end > occurrence.end ||
+                !_isValidTextRange(
+                  text,
+                  wordOccurrence.start,
+                  wordOccurrence.end,
+                )) {
+              continue;
+            }
+            final surface = _normalizeLookupWord(
+              text.substring(wordOccurrence.start, wordOccurrence.end),
+            );
+            if (!normalizedForms.contains(surface)) continue;
+            available.add(
+              _MarkedRange(
+                start: wordOccurrence.start,
+                end: wordOccurrence.end,
+                item: item,
+                kind: _MarkedRangeKind.word,
+                isSelected: false,
+              ),
+            );
+          }
+        }
+        available.sort((left, right) => left.start.compareTo(right.start));
+
+        final components = <_MarkedRange>[];
+        var minimumStart = occurrence.start;
+        for (final phraseWord in phraseWords) {
+          final matching = available.where(
+            (range) =>
+                range.start >= minimumStart &&
+                <String>{
+                  _normalizeLookupWord(range.item.text),
+                  ...range.item.surfaceForms.map(_normalizeLookupWord),
+                }.contains(phraseWord),
+          );
+          if (matching.isEmpty) {
+            components.clear();
+            break;
+          }
+          final component = matching.first;
+          components.add(component);
+          minimumStart = component.end;
+        }
+        final containsSelectedWord = components.any(
+          (component) =>
+              component.start == wordRange.start &&
+              component.end == wordRange.end,
+        );
+        if (components.length < 2 || !containsSelectedWord) continue;
+        candidates.add(
+          _RelatedPhraseSelection(
+            item: phrase,
+            phraseStart: occurrence.start,
+            phraseEnd: occurrence.end,
+            selectedWordStart: wordRange.start,
+            selectedWordEnd: wordRange.end,
+            componentRanges: components
+                .map((component) => _TextRange(component.start, component.end))
+                .toList(),
+          ),
+        );
+      }
+    }
+
+    if (candidates.isEmpty) return null;
+    candidates.sort((left, right) {
+      final componentCompare = right.componentRanges.length.compareTo(
+        left.componentRanges.length,
+      );
+      if (componentCompare != 0) return componentCompare;
+      return (left.phraseEnd - left.phraseStart).compareTo(
+        right.phraseEnd - right.phraseStart,
+      );
+    });
+    return candidates.first;
   }
 
   _MarkedRange? rangeForKey(String key) {
@@ -2517,6 +2711,7 @@ List<_MarkedRange> _markedRangesForText({
   required ExtractWordsResult? result,
   required int? selectionStart,
   required int? selectionEnd,
+  required _RelatedPhraseSelection? relatedPhraseSelection,
 }) {
   final items = result?.items ?? const <LexicalItemResult>[];
   final hasSelection =
@@ -2545,6 +2740,26 @@ List<_MarkedRange> _markedRangesForText({
           item: item,
           kind: _MarkedRangeKind.phrase,
           isSelected: true,
+        ),
+      );
+    }
+  }
+
+  if (relatedPhraseSelection != null) {
+    for (final component in relatedPhraseSelection.componentRanges) {
+      final isSelectedComponent =
+          component.start == relatedPhraseSelection.selectedWordStart &&
+          component.end == relatedPhraseSelection.selectedWordEnd;
+      if (isSelectedComponent) continue;
+      ranges.add(
+        _MarkedRange(
+          start: component.start,
+          end: component.end,
+          item: relatedPhraseSelection.item,
+          kind: _MarkedRangeKind.relatedPhrasePart,
+          isSelected: false,
+          phraseStart: relatedPhraseSelection.phraseStart,
+          phraseEnd: relatedPhraseSelection.phraseEnd,
         ),
       );
     }
@@ -2579,6 +2794,13 @@ List<_MarkedRange> _markedRangesForText({
       if (overlapsSelectedPhrase) {
         continue;
       }
+      final isRelatedPhrasePart = ranges.any(
+        (range) =>
+            range.kind == _MarkedRangeKind.relatedPhrasePart &&
+            occurrence.start == range.start &&
+            occurrence.end == range.end,
+      );
+      if (isRelatedPhrasePart) continue;
       ranges.add(
         _MarkedRange(
           start: occurrence.start,
@@ -3112,7 +3334,13 @@ class _BatchAddButtonState extends State<_BatchAddButton> {
   }
 }
 
-enum _MarkedRangeKind { word, phrase }
+enum _MarkedRangeKind { word, phrase, relatedPhrasePart }
+
+int _rangeKindPriority(_MarkedRangeKind kind) => switch (kind) {
+  _MarkedRangeKind.word => 1,
+  _MarkedRangeKind.relatedPhrasePart => 2,
+  _MarkedRangeKind.phrase => 3,
+};
 
 Color? _markerBackgroundColor({
   required _MarkedRangeKind? kind,
@@ -3125,6 +3353,9 @@ Color? _markerBackgroundColor({
   }
   if (isCompleteSelection && kind == _MarkedRangeKind.word) {
     return const Color(0xFFFFE16D).withValues(alpha: 0.62);
+  }
+  if (kind == _MarkedRangeKind.relatedPhrasePart) {
+    return const Color(0xFF86C77A).withValues(alpha: 0.24);
   }
   if (touchesSelection) {
     return const Color(0xFFA4C9FF).withValues(alpha: 0.42);
@@ -3143,6 +3374,8 @@ class _MarkedRange {
   final LexicalItemResult item;
   final _MarkedRangeKind kind;
   final bool isSelected;
+  final int? phraseStart;
+  final int? phraseEnd;
 
   const _MarkedRange({
     required this.start,
@@ -3150,7 +3383,89 @@ class _MarkedRange {
     required this.item,
     required this.kind,
     required this.isSelected,
+    this.phraseStart,
+    this.phraseEnd,
   });
+
+  bool get isSingleClickMarker =>
+      isSelected ||
+      kind == _MarkedRangeKind.phrase ||
+      kind == _MarkedRangeKind.relatedPhrasePart;
+}
+
+class _RelatedPhraseSelection {
+  final LexicalItemResult item;
+  final int phraseStart;
+  final int phraseEnd;
+  final int selectedWordStart;
+  final int selectedWordEnd;
+  final List<_TextRange> componentRanges;
+
+  const _RelatedPhraseSelection({
+    required this.item,
+    required this.phraseStart,
+    required this.phraseEnd,
+    required this.selectedWordStart,
+    required this.selectedWordEnd,
+    required this.componentRanges,
+  });
+}
+
+@visibleForTesting
+({String phrase, List<({int start, int end})> components})?
+findRelatedPhraseForWordForTesting({
+  required String text,
+  required ExtractWordsResult result,
+  required int wordStart,
+  required int wordEnd,
+}) {
+  final state = _LearningTextState(
+    text: text,
+    result: result,
+    selectionStart: wordStart,
+    selectionEnd: wordEnd,
+    relatedPhraseSelection: null,
+  );
+  final wordRange = state.ranges.where(
+    (range) =>
+        range.kind == _MarkedRangeKind.word &&
+        range.start == wordStart &&
+        range.end == wordEnd,
+  );
+  if (wordRange.isEmpty) return null;
+  final related = state.relatedPhraseForWord(wordRange.first);
+  if (related == null) return null;
+  return (
+    phrase: related.item.text,
+    components: related.componentRanges
+        .map((range) => (start: range.start, end: range.end))
+        .toList(),
+  );
+}
+
+@visibleForTesting
+bool isWordSingleClickMarkerForTesting({
+  required String text,
+  required ExtractWordsResult result,
+  required int wordStart,
+  required int wordEnd,
+  int? selectionStart,
+  int? selectionEnd,
+}) {
+  final state = _LearningTextState(
+    text: text,
+    result: result,
+    selectionStart: selectionStart,
+    selectionEnd: selectionEnd,
+    relatedPhraseSelection: null,
+  );
+  final matches = state.ranges.where(
+    (range) =>
+        range.kind == _MarkedRangeKind.word &&
+        range.start == wordStart &&
+        range.end == wordEnd,
+  );
+  return matches.isNotEmpty && matches.first.isSingleClickMarker;
 }
 
 _MarkedRange? _rangeCoveringSegment(
