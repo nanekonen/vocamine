@@ -85,59 +85,69 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ? session.username!.trim()
         : 'ユーザー';
 
-    return Scaffold(
-      body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _load,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(32, 30, 32, 48),
-            children: [
-              Text(
-                'こんにちは、「$name」さん',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: const Color(0xFF1A2B3C),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 600;
+        return Scaffold(
+          body: SafeArea(
+            child: RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 16 : 32,
+                  compact ? 20 : 30,
+                  compact ? 16 : 32,
+                  48,
                 ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                '今日も、ことばを少しずつ積み重ねていきましょう。',
-                style: TextStyle(color: Color(0xFF626970)),
-              ),
-              const SizedBox(height: 30),
-              if (_error != null && _summary == null)
-                _ErrorCard(onRetry: _load)
-              else
-                _ProgressCard(summary: _summary, isLoading: _loading),
-              const SizedBox(height: 28),
-              Text(
-                '直近で開いた教材',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: const Color(0xFF1A2B3C),
-                ),
-              ),
-              const SizedBox(height: 14),
-              if (recentMaterial == null && _loading)
-                const _LoadingMaterialCard()
-              else if (recentMaterial == null)
-                _EmptyMaterialCard(onImport: widget.onImportMaterial)
-              else
-                _RecentMaterialCard(
-                  material: recentMaterial,
-                  analysis: library.analyses[recentMaterial.id]?.value,
-                  onTap: () => context.push(
-                    '/materials/detail',
-                    extra: {
-                      'materialId': recentMaterial!.id,
-                      'title': recentMaterial.title,
-                    },
+                children: [
+                  Text(
+                    'こんにちは、$nameさん',
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF1A2B3C),
+                    ),
                   ),
-                ),
-            ],
+                  const SizedBox(height: 8),
+                  const Text(
+                    '今日も、ことばを少しずつ積み重ねていきましょう。',
+                    style: TextStyle(color: Color(0xFF626970)),
+                  ),
+                  const SizedBox(height: 30),
+                  if (_error != null && _summary == null)
+                    _ErrorCard(onRetry: _load)
+                  else
+                    _ProgressCard(summary: _summary, isLoading: _loading),
+                  const SizedBox(height: 28),
+                  Text(
+                    '直近で開いた教材',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF1A2B3C),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  if (recentMaterial == null && _loading)
+                    const _LoadingMaterialCard()
+                  else if (recentMaterial == null)
+                    _EmptyMaterialCard(onImport: widget.onImportMaterial)
+                  else
+                    _RecentMaterialCard(
+                      material: recentMaterial,
+                      analysis: library.analyses[recentMaterial.id]?.value,
+                      onTap: () => context.push(
+                        '/materials/detail',
+                        extra: {
+                          'materialId': recentMaterial!.id,
+                          'title': recentMaterial.title,
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -309,102 +319,141 @@ class _RecentMaterialCard extends StatelessWidget {
     final coverage = analysis == null
         ? null
         : (analysis!.coverageRate * 100).round();
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        height: 250,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: const Color(0xFFD2D8DE)),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x180B1C2C),
-              blurRadius: 20,
-              offset: Offset(0, 7),
-            ),
-          ],
+    final decoration = BoxDecoration(
+      color: Colors.white,
+      border: Border.all(color: const Color(0xFFD2D8DE)),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x180B1C2C),
+          blurRadius: 20,
+          offset: Offset(0, 7),
         ),
-        child: Row(
+      ],
+    );
+    final meter = SquareProgressIndicator(
+      value: (coverage ?? 0) / 100,
+      size: 126,
+      strokeWidth: 10,
+      color: const Color(0xFF68ABFF),
+      backgroundColor: const Color(0xFFD3DCE6),
+      child: Text.rich(
+        TextSpan(
           children: [
-            SizedBox(width: 500, child: _MaterialPreview(bytes: preview)),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(30),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text(
-                      'RECENT MATERIAL',
-                      style: TextStyle(
-                        fontSize: 12,
-                        letterSpacing: 1.4,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF1A5C94),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      material.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                  ],
-                ),
+            TextSpan(
+              text: coverage == null ? '--' : '$coverage',
+              style: const TextStyle(
+                fontSize: 36,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF68ABFF),
               ),
             ),
-            Container(
-              width: 220,
-              height: double.infinity,
-              color: Colors.white,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  SquareProgressIndicator(
-                    value: (coverage ?? 0) / 100,
-                    size: 126,
-                    strokeWidth: 10,
-                    color: const Color(0xFF68ABFF),
-                    backgroundColor: const Color(0xFFD3DCE6),
-                    child: Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(
-                            text: coverage == null ? '--' : '$coverage',
-                            style: const TextStyle(
-                              fontSize: 36,
-                              fontWeight: FontWeight.w800,
-                              color: Color(0xFF68ABFF),
-                            ),
-                          ),
-                          const TextSpan(
-                            text: '%',
-                            style: TextStyle(
-                              fontSize: 25,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF1A2B3C),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  const Text(
-                    '習得語彙率',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF1A2B3C),
-                    ),
-                  ),
-                ],
+            const TextSpan(
+              text: '%',
+              style: TextStyle(
+                fontSize: 25,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1A2B3C),
               ),
             ),
           ],
         ),
       ),
+    );
+    const coverageLabel = Text(
+      '習得語彙率',
+      style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF1A2B3C)),
+    );
+    final title = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Text(
+          'RECENT MATERIAL',
+          style: TextStyle(
+            fontSize: 12,
+            letterSpacing: 1.4,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1A5C94),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          material.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(
+            context,
+          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+        ),
+      ],
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 760;
+        final previewWidth = (constraints.maxWidth * .42).clamp(280.0, 500.0);
+        final meterWidth = constraints.maxWidth < 1100 ? 180.0 : 220.0;
+        final compactPreviewHeight = (constraints.maxWidth * .56).clamp(
+          160.0,
+          240.0,
+        );
+        return InkWell(
+          onTap: onTap,
+          child: Container(
+            height: compact ? null : 250,
+            decoration: decoration,
+            child: compact
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(
+                        height: compactPreviewHeight,
+                        child: _MaterialPreview(bytes: preview),
+                      ),
+                      Padding(padding: const EdgeInsets.all(20), child: title),
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Transform.scale(scale: .82, child: meter),
+                            const SizedBox(width: 8),
+                            coverageLabel,
+                          ],
+                        ),
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      SizedBox(
+                        width: previewWidth,
+                        child: _MaterialPreview(bytes: preview),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(30),
+                          child: title,
+                        ),
+                      ),
+                      Container(
+                        width: meterWidth,
+                        height: double.infinity,
+                        color: Colors.white,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            meter,
+                            const SizedBox(height: 14),
+                            coverageLabel,
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        );
+      },
     );
   }
 }
@@ -444,34 +493,58 @@ class _EmptyMaterialCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 34),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF5F7FA),
-        border: Border.all(color: const Color(0xFFD2D8DE)),
+    return LayoutBuilder(
+      builder: (context, constraints) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 34),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7FA),
+          border: Border.all(color: const Color(0xFFD2D8DE)),
+        ),
+        child: constraints.maxWidth < 600
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const _EmptyMaterialMessage(),
+                  const SizedBox(height: 20),
+                  FilledButton(
+                    onPressed: onImport,
+                    child: const Text('教材を読み込む'),
+                  ),
+                ],
+              )
+            : Row(
+                children: [
+                  const Expanded(child: _EmptyMaterialMessage()),
+                  const SizedBox(width: 24),
+                  FilledButton(
+                    onPressed: onImport,
+                    child: const Text('教材を読み込む'),
+                  ),
+                ],
+              ),
       ),
-      child: Row(
-        children: [
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '最初の教材を読み込みましょう',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'PDFまたは画像から教材を登録すると、語彙の抽出と学習を始められます。',
-                  style: TextStyle(color: Color(0xFF626970)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 24),
-          FilledButton(onPressed: onImport, child: const Text('教材を読み込む')),
-        ],
-      ),
+    );
+  }
+}
+
+class _EmptyMaterialMessage extends StatelessWidget {
+  const _EmptyMaterialMessage();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '最初の教材を読み込みましょう',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+        ),
+        SizedBox(height: 8),
+        Text(
+          'PDFまたは画像から教材を登録すると、語彙の抽出と学習を始められます。',
+          style: TextStyle(color: Color(0xFF626970)),
+        ),
+      ],
     );
   }
 }

@@ -1,5 +1,5 @@
 name: vacamine
-description: "A new Flutter project."
+description: "教材から未知語を見つけ、自分だけの単語帳で学べる語彙学習アプリ Glossalyze。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../services/app_session.dart';
+import '../services/app_messenger.dart';
 import '../services/vocamine_api_client.dart';
 
 class SelectedLevelNotifier extends Notifier<String?> {
@@ -65,7 +66,7 @@ class _LevelSetupScreenState extends ConsumerState<LevelSetupScreen> {
   Future<void> _saveLevel(String level) async {
     setState(() => _isSaving = true);
     try {
-      final count = await _api.setupLevel(
+      await _api.setupLevel(
         userId: ref.read(appSessionProvider).userId,
         level: level,
         username: ref.read(appSessionProvider).username ?? 'User',
@@ -75,10 +76,8 @@ class _LevelSetupScreenState extends ConsumerState<LevelSetupScreen> {
           .read(appSessionProvider.notifier)
           .markSetupCompleted(level: level);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('学習済み単語を$count件登録しました')));
       context.go('/');
+      AppMessenger.show('あなたのレベルに合わせて単語登録中');
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(

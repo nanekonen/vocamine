@@ -4,7 +4,7 @@ import 'package:vacamine/main.dart';
 
 void main() {
   testWidgets('app starts on materials tab', (WidgetTester tester) async {
-    await tester.pumpWidget(const ProviderScope(child: VocamineApp()));
+    await tester.pumpWidget(const ProviderScope(child: GlossalyzeApp()));
 
     expect(find.text('教材'), findsWidgets);
     expect(find.text('単語帳'), findsOneWidget);
