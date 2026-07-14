@@ -12,6 +12,7 @@ import '../providers/material_library_provider.dart';
 import '../services/browser_context_menu_lease.dart';
 import '../services/app_session.dart';
 import '../services/app_messenger.dart';
+import '../services/document_scanner_service.dart';
 import '../services/vocamine_api_client.dart';
 import '../widgets/square_progress_indicator.dart';
 
@@ -222,11 +223,28 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
     );
   }
 
+  String _scannedImageName() {
+    final now = DateTime.now();
+    String twoDigits(int value) => value.toString().padLeft(2, '0');
+    return 'スキャン_${now.year}${twoDigits(now.month)}${twoDigits(now.day)}_'
+        '${twoDigits(now.hour)}${twoDigits(now.minute)}${twoDigits(now.second)}.jpg';
+  }
+
   Future<void> _addImageMaterial(BuildContext context, WidgetRef ref) async {
     final picker = ImagePicker();
-    final image = await picker.pickImage(source: ImageSource.gallery);
+    XFile? image;
+    try {
+      image = await picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 100,
+      );
+    } catch (error) {
+      AppMessenger.show('画像を選択できませんでした: $error');
+      return;
+    }
     if (image == null) return;
-    final title = await _askMaterialTitle(image.name);
+    final filename = image.name;
+    final title = await _askMaterialTitle(filename);
     if (title == null) return;
 
     final pendingId = _showPendingImport(title);
@@ -236,13 +254,13 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       final bytes = await image.readAsBytes();
       final extraction = await _api.extractTextFromImage(
         bytes: bytes,
-        filename: image.name,
+        filename: filename,
       );
       await library.addMaterial(
         title,
         extraction.text,
         sourceBytes: bytes,
-        sourceMimeType: image.mimeType ?? _mimeTypeForName(image.name),
+        sourceMimeType: image.mimeType ?? _mimeTypeForName(filename),
         sourceWordBoxes: extraction.wordBoxes,
         folderId: widget.folderId,
         analyzeImmediately: true,
@@ -250,6 +268,76 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       AppMessenger.show('「$title」を追加しました');
     } catch (error) {
       AppMessenger.show('OCRに失敗しました: $error');
+    } finally {
+      if (mounted) {
+        _hidePendingImport(pendingId);
+        setState(() => _isImporting = false);
+      }
+    }
+  }
+
+  Future<({String text, List<SourceWordBox> boxes})> _extractScannedPages(
+    List<Uint8List> pages,
+  ) async {
+    var text = '';
+    final boxes = <SourceWordBox>[];
+    for (var index = 0; index < pages.length; index++) {
+      final extraction = await _api.extractTextFromImage(
+        bytes: pages[index],
+        filename: 'scan_${index + 1}.jpg',
+      );
+      final textOffset = text.isEmpty ? 0 : text.length + 2;
+      text += '${text.isEmpty ? '' : '\n\n'}${extraction.text}';
+      boxes.addAll(
+        extraction.wordBoxes.map(
+          (box) => SourceWordBox(
+            text: box.text,
+            pageIndex: index,
+            start: box.start == null ? null : box.start! + textOffset,
+            end: box.end == null ? null : box.end! + textOffset,
+            left: box.left,
+            top: box.top,
+            width: box.width,
+            height: box.height,
+          ),
+        ),
+      );
+    }
+    return (text: text, boxes: boxes);
+  }
+
+  Future<void> _scanMaterial(BuildContext context, WidgetRef ref) async {
+    List<Uint8List> pages;
+    try {
+      pages = await DocumentScannerService.scan();
+    } catch (error) {
+      AppMessenger.show('書類スキャンを開始できませんでした: $error');
+      return;
+    }
+    if (pages.isEmpty || !mounted) return;
+
+    final filename = _scannedImageName();
+    final title = await _askMaterialTitle(filename);
+    if (title == null) return;
+
+    final pendingId = _showPendingImport(title);
+    final library = ref.read(materialLibraryProvider.notifier);
+    setState(() => _isImporting = true);
+    try {
+      final extraction = await _extractScannedPages(pages);
+      await library.addMaterial(
+        title,
+        extraction.text,
+        sourceBytes: pages.first,
+        sourceMimeType: 'image/jpeg',
+        sourcePageImages: pages,
+        sourceWordBoxes: extraction.boxes,
+        folderId: widget.folderId,
+        analyzeImmediately: true,
+      );
+      AppMessenger.show('「$title」を追加しました');
+    } catch (error) {
+      AppMessenger.show('スキャンした書類の読み込みに失敗しました: $error');
     } finally {
       if (mounted) {
         _hidePendingImport(pendingId);
@@ -307,9 +395,16 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (DocumentScannerService.isSupported)
+                ListTile(
+                  leading: const Icon(Icons.document_scanner_outlined),
+                  title: const Text('書類をスキャン'),
+                  subtitle: const Text('輪郭を検出して自動補正・トリミング'),
+                  onTap: () => Navigator.pop(context, 'scanner'),
+                ),
               ListTile(
                 leading: const Icon(Icons.image),
-                title: const Text('画像を読み込む'),
+                title: const Text('画像から読み込む'),
                 onTap: () => Navigator.pop(context, 'image'),
               ),
               ListTile(
@@ -323,7 +418,9 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
       },
     );
     if (!context.mounted || choice == null) return;
-    if (choice == 'image') {
+    if (choice == 'scanner') {
+      await _scanMaterial(context, ref);
+    } else if (choice == 'image') {
       await _addImageMaterial(context, ref);
     } else if (choice == 'pdf') {
       await _addPdfMaterial(context, ref);
@@ -442,6 +539,13 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (DocumentScannerService.isSupported)
+              ListTile(
+                leading: const Icon(Icons.document_scanner_outlined),
+                title: const Text('書類をスキャンして追加'),
+                subtitle: const Text('複数ページ対応'),
+                onTap: () => Navigator.pop(context, 'scanner'),
+              ),
             ListTile(
               leading: const Icon(Icons.image_outlined),
               title: const Text('画像を追加'),
@@ -477,8 +581,16 @@ class _MaterialsScreenState extends ConsumerState<MaterialsScreen> {
         text = extraction.text;
         images.addAll(extraction.pageImages);
         boxes.addAll(extraction.wordBoxes);
+      } else if (choice == 'scanner') {
+        final scannedPages = await DocumentScannerService.scan();
+        if (scannedPages.isEmpty) return;
+        final extraction = await _extractScannedPages(scannedPages);
+        text = extraction.text;
+        images.addAll(scannedPages);
+        boxes.addAll(extraction.boxes);
       } else {
-        final picked = await ImagePicker().pickMultiImage();
+        final picker = ImagePicker();
+        final picked = await picker.pickMultiImage(imageQuality: 100);
         if (picked.isEmpty) return;
         for (var index = 0; index < picked.length; index++) {
           final file = picked[index];
