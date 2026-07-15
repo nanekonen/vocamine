@@ -188,6 +188,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           'Glossalyze',
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
+                        const SizedBox(height: 10),
+                        Text(
+                          '英語教材を、読むだけの資料から、\n自分専用の語彙教材へ。',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
                         const SizedBox(height: 32),
                         Text(
                           _isSignUp ? 'アカウントを作成' : 'ログインして始める',

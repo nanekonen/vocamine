@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://glossalyze.sawa0911a.workers.dev/sitemap.xml
