@@ -25,3 +25,7 @@ flutter build web --release \
   --dart-define="VOCAMINE_API_BASE_URL=${VOCAMINE_API_BASE_URL}" \
   --dart-define="SUPABASE_URL=${SUPABASE_URL}" \
   --dart-define="SUPABASE_PUBLISHABLE_KEY=${SUPABASE_PUBLISHABLE_KEY}"
+
+# Flutter does not copy additional root-level HTML files into build/web.
+# Keep this file deployed so Google Search Console ownership stays verified.
+cp web/google19385cc78372cafc.html build/web/google19385cc78372cafc.html
